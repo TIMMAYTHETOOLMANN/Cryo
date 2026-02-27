@@ -30,6 +30,12 @@ contract MainnetScanner is Script {
     address constant UNISWAP_V3_ROUTER = 0xE592427A0AEce92De3Edee1F18E0157C05861564;
     uint24  constant POOL_FEE          = 3000; // 0.3%
 
+    // --- Execution Constants ---
+    uint256 constant GAS_ESTIMATE          = 500000;   // Conservative gas estimate for full cycle
+    uint256 constant SWAP_BUFFER_BPS       = 500;      // 5% buffer for collateral acquisition
+    uint256 constant SLIPPAGE_TOLERANCE_BPS = 500;     // 5% slippage tolerance on DEX swaps
+    uint256 constant SWAP_DEADLINE_SECONDS = 300;      // 5 minute deadline for swaps
+
     // --- Configurable Thresholds ---
     uint256 public minProfitWei;
     uint256 public gasPriceCapGwei;
@@ -141,8 +147,7 @@ contract MainnetScanner is Script {
         console.log("  Total profit estimate: $", totalProfitUsd / 1e18);
 
         // Gas cost analysis
-        uint256 gasEstimate = 500000;
-        uint256 gasCostWei = gasEstimate * gasPriceCapGwei * 1e9;
+        uint256 gasCostWei = GAS_ESTIMATE * gasPriceCapGwei * 1e9;
 
         // Get collateral amounts for rough profit estimate in ETH terms
         CollateralizationDetector.RTokenPositionData memory data = detector.getRTokenPosition(rToken);
@@ -179,7 +184,7 @@ contract MainnetScanner is Script {
         for (uint256 i = 0; i < amounts.length; i++) {
             totalEthNeeded += amounts[i];
         }
-        totalEthNeeded = (totalEthNeeded * 105) / 100; // 5% buffer
+        totalEthNeeded = (totalEthNeeded * (10000 + SWAP_BUFFER_BPS)) / 10000;
 
         IWETH(WETH).deposit{value: totalEthNeeded}();
         IERC20Minimal(WETH).approve(UNISWAP_V3_ROUTER, totalEthNeeded);
@@ -192,9 +197,9 @@ contract MainnetScanner is Script {
                 tokenOut: tokens[i],
                 fee: POOL_FEE,
                 recipient: executor,
-                deadline: block.timestamp + 300,
+                deadline: block.timestamp + SWAP_DEADLINE_SECONDS,
                 amountIn: amounts[i],
-                amountOutMinimum: (amounts[i] * 95) / 100,
+                amountOutMinimum: (amounts[i] * (10000 - SLIPPAGE_TOLERANCE_BPS)) / 10000,
                 sqrtPriceLimitX96: 0
             });
             ISwapRouter(UNISWAP_V3_ROUTER).exactInputSingle(params);
