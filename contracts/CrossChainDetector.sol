@@ -15,8 +15,8 @@ import "./interfaces/IMulticall3.sol";
 ///      for efficient batch reads on each network.
 ///
 ///      Identification surface = protocolTypes × supportedNetworks
-///      Single chain: 13 protocol types
-///      Cross-chain:  13 protocol types × 5 networks = 65 identification targets
+///      Single chain: 14 protocol types
+///      Cross-chain:  14 protocol types × 8 networks = 112 identification targets
 contract CrossChainDetector {
     using OracleIntegration for address;
 
@@ -72,7 +72,7 @@ contract CrossChainDetector {
     uint256 public constant SUPPORTED_NETWORKS = 8;
 
     /// @notice Number of protocol types (excluding Unknown)
-    uint256 public constant PROTOCOL_TYPES = 13;
+    uint256 public constant PROTOCOL_TYPES = 14;
 
     // --- Standard Multicall3 address (same on most chains) ---
     address public constant MULTICALL3 = 0xcA11bde05977b3631167028862bE2a173976CA11;

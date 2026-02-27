@@ -6,6 +6,7 @@ import "forge-std/console.sol";
 import "./contracts/CollateralizationDetector.sol";
 import "./contracts/LPPricing.sol";
 import "./contracts/OracleIntegration.sol";
+import "./contracts/interfaces/IReserveProtocol.sol";
 
 /// @title CollateralizationDetectorTest
 /// @notice Tests for the multi-chain DeFi over-collateralization detection system
@@ -214,5 +215,169 @@ contract CollateralizationDetectorTest is Test {
             call.callData,
             abi.encodeWithSelector(ICompoundV2Comptroller.getAccountLiquidity.selector, testAccount)
         );
+    }
+
+    // ============================================================
+    // Reserve Protocol RToken Detection Tests
+    // ============================================================
+
+    function testGetRTokenPositionOverCollateralized() public {
+        address mockRToken = address(0xBEEF);
+        address mockMain = address(0xCA11);
+        address mockBasketHandler = address(0xBA5E);
+
+        // Mock totalSupply: 1000 tokens
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.totalSupply.selector),
+            abi.encode(uint256(1000e18))
+        );
+
+        // Mock basketsNeeded: 1059 baskets (5.9% over-collateralized, matching POC)
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.basketsNeeded.selector),
+            abi.encode(uint192(1059e18))
+        );
+
+        // Mock main()
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.main.selector),
+            abi.encode(mockMain)
+        );
+
+        // Mock basketHandler()
+        vm.mockCall(
+            mockMain,
+            abi.encodeWithSelector(IMain.basketHandler.selector),
+            abi.encode(mockBasketHandler)
+        );
+
+        // Mock quote for 1e18 baskets
+        address[] memory tokens = new address[](2);
+        tokens[0] = address(0x1111);
+        tokens[1] = address(0x2222);
+        uint256[] memory amounts = new uint256[](2);
+        amounts[0] = 0.5e18;
+        amounts[1] = 0.5e18;
+        vm.mockCall(
+            mockBasketHandler,
+            abi.encodeWithSelector(IBasketHandler.quote.selector),
+            abi.encode(tokens, amounts)
+        );
+
+        CollateralizationDetector.RTokenPositionData memory data = detector.getRTokenPosition(mockRToken);
+
+        assertEq(data.totalSupply, 1000e18, "Total supply should be 1000");
+        assertEq(data.basketsNeeded, 1059e18, "Baskets needed should be 1059");
+        assertTrue(data.isOverCollateralized, "Should be over-collateralized");
+        assertEq(data.excessBaskets, 59e18, "Excess baskets should be 59");
+        assertGt(data.collateralRatio, 1e18, "Collateral ratio should exceed 100%");
+        assertGt(data.profitPerToken, 0, "Profit per token should be positive");
+        assertEq(data.collateralTokens.length, 2, "Should have 2 collateral tokens");
+        assertEq(data.collateralAmounts.length, 2, "Should have 2 collateral amounts");
+    }
+
+    function testGetRTokenPositionNotOverCollateralized() public {
+        address mockRToken = address(0xBEEF);
+
+        // Mock totalSupply: 1000 tokens
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.totalSupply.selector),
+            abi.encode(uint256(1000e18))
+        );
+
+        // Mock basketsNeeded: 1000 baskets (exactly collateralized)
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.basketsNeeded.selector),
+            abi.encode(uint192(1000e18))
+        );
+
+        // Mock main() - will revert, but that's fine for quote
+        vm.mockCallRevert(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.main.selector),
+            "no main"
+        );
+
+        CollateralizationDetector.RTokenPositionData memory data = detector.getRTokenPosition(mockRToken);
+
+        assertEq(data.totalSupply, 1000e18);
+        assertEq(data.basketsNeeded, 1000e18);
+        assertFalse(data.isOverCollateralized);
+        assertEq(data.excessBaskets, 0);
+    }
+
+    function testAnalyzeRTokenProfitability() public {
+        address mockRToken = address(0xBEEF);
+
+        // Mock totalSupply: 60400000 tokens (matching POC block state)
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.totalSupply.selector),
+            abi.encode(uint256(60_400_000e18))
+        );
+
+        // Mock basketsNeeded: 63966000 (5.9% over, matching POC)
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.basketsNeeded.selector),
+            abi.encode(uint192(63_966_000e18))
+        );
+
+        (
+            uint256 excessBaskets,
+            uint256 profitBps,
+            uint256 totalProfitUsd,
+            bool isOpportunity
+        ) = detector.analyzeRTokenProfitability(mockRToken, 1800e18);
+
+        assertTrue(isOpportunity, "Should detect opportunity");
+        assertEq(excessBaskets, 3_566_000e18, "Excess baskets should match");
+        assertGt(profitBps, 500, "Profit should exceed 500 bps (~5.9%)");
+        assertGt(totalProfitUsd, 6_000_000e18, "Total profit should exceed $6M");
+    }
+
+    function testAnalyzeRTokenNoProfitability() public {
+        address mockRToken = address(0xBEEF);
+
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.totalSupply.selector),
+            abi.encode(uint256(1000e18))
+        );
+
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.basketsNeeded.selector),
+            abi.encode(uint192(900e18)) // Under-collateralized
+        );
+
+        (,,, bool isOpportunity) = detector.analyzeRTokenProfitability(mockRToken, 1800e18);
+        assertFalse(isOpportunity, "Should not detect opportunity when under-collateralized");
+    }
+
+    function testClassifyProtocolReserve() public {
+        address mockRToken = address(0xBEEF);
+
+        // Mock basketsNeeded() to succeed
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.basketsNeeded.selector),
+            abi.encode(uint192(1000e18))
+        );
+
+        // Mock main() to succeed
+        vm.mockCall(
+            mockRToken,
+            abi.encodeWithSelector(IRToken.main.selector),
+            abi.encode(address(0xCA11))
+        );
+
+        CollateralizationDetector.ProtocolType pType = detector.classifyProtocol(mockRToken);
+        assertEq(uint8(pType), uint8(CollateralizationDetector.ProtocolType.ReserveProtocol));
     }
 }

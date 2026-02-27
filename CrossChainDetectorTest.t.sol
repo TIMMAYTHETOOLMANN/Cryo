@@ -35,7 +35,7 @@ contract CrossChainDetectorTest is Test {
         assertEq(crossChain.CHAIN_BSC(), 56);
         assertEq(crossChain.CHAIN_ZKSYNC(), 324);
         assertEq(crossChain.SUPPORTED_NETWORKS(), 8);
-        assertEq(crossChain.PROTOCOL_TYPES(), 13);
+        assertEq(crossChain.PROTOCOL_TYPES(), 14);
     }
 
     // ============================================================
@@ -158,9 +158,9 @@ contract CrossChainDetectorTest is Test {
 
     function testIdentificationCapacity() public view {
         (uint256 capacity, uint256 singleChain, uint256 multiplier) = crossChain.identificationCapacity();
-        assertEq(singleChain, 13, "13 protocol types");
+        assertEq(singleChain, 14, "14 protocol types");
         assertEq(multiplier, 8, "8 supported networks");
-        assertEq(capacity, 104, "104 total identification targets (13 x 8)");
+        assertEq(capacity, 112, "112 total identification targets (14 x 8)");
         assertGt(capacity, singleChain, "Cross-chain capacity exceeds single-chain");
     }
 
@@ -465,10 +465,10 @@ contract CrossChainDetectorTest is Test {
 
         for (uint256 i = 0; i < chains.length; i++) {
             CrossChainDetector.NetworkConfig memory config = crossChain.getNetworkConfig(chains[i]);
-            if (config.isL2) {
+            if (config.isL2 && config.chainId != crossChain.CHAIN_ZKSYNC()) {
                 assertTrue(
                     config.sequencerUptimeFeed != address(0),
-                    "L2 networks should have sequencer uptime feeds"
+                    "L2 networks (except zkSync) should have sequencer uptime feeds"
                 );
             }
         }

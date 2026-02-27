@@ -7,6 +7,7 @@ COPY foundry.toml .
 COPY .gitmodules .
 COPY lib/ lib/
 COPY contracts/ contracts/
+COPY script/ script/
 COPY CollateralizationDetector.t.sol .
 COPY CrossChainDetectorTest.t.sol .
 

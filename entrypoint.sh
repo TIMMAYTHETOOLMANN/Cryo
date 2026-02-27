@@ -18,12 +18,30 @@ echo "Networks: Ethereum, Arbitrum, Optimism, Polygon, Base, Avalanche, BSC, zkS
 echo "================================="
 
 while true; do
-    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running detection scan..."
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running production scan..."
 
-    if forge test ${VERBOSITY} --match-contract "CollateralizationDetectorTest|CrossChainDetectorTest" 2>&1; then
-        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Scan completed successfully."
+    # Run mainnet scanner if RPC URL is available
+    if [ -n "${MAINNET_RPC_URL:-}" ]; then
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Executing mainnet scanner..."
+        BROADCAST_FLAG=""
+        if [ -n "${PRIVATE_KEY:-}" ]; then
+            BROADCAST_FLAG="--private-key ${PRIVATE_KEY} --broadcast"
+        fi
+        if forge script script/MainnetScanner.s.sol:MainnetScanner \
+            --rpc-url "${MAINNET_RPC_URL}" \
+            ${BROADCAST_FLAG} \
+            ${VERBOSITY} 2>&1; then
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Mainnet scan completed."
+        else
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Mainnet scan encountered errors."
+        fi
     else
-        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Scan encountered errors."
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] No MAINNET_RPC_URL set. Running unit tests only."
+        if forge test ${VERBOSITY} --match-contract "CollateralizationDetectorTest|CrossChainDetectorTest" 2>&1; then
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Unit tests passed."
+        else
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Unit tests failed."
+        fi
     fi
 
     echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sleeping ${SCAN_INTERVAL}s..."
