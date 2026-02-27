@@ -8,6 +8,8 @@ services:
     container_name: mainnet-arb-executor
     env_file:
       - .env
+    volumes:
+      - ./.env:/app/.env:ro
     restart: unless-stopped
     networks:
       - arb-network

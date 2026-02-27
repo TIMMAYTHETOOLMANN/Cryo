@@ -4,7 +4,6 @@ WORKDIR /app
 
 # Copy project files
 COPY foundry.toml .
-COPY .env .env
 COPY POC.sol .
 COPY POCDeploy.s.sol .
 COPY FullExploitPOC.t.sol .
