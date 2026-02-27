@@ -10,6 +10,8 @@ COPY POC.sol .
 COPY POCDeploy.s.sol .
 COPY FullExploitPOC.t.sol .
 COPY ReserveRecon.t.sol .
+COPY CollateralizationDetector.t.sol .
+COPY contracts/ contracts/
 COPY script/ script/
 
 # Copy and set up entrypoint

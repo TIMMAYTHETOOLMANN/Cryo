@@ -22,8 +22,11 @@ jobs:
       - name: Build
         run: forge build
 
-      - name: Run tests
-        run: forge test -vvv
+      - name: Run unit tests
+        run: forge test -vvv --match-contract CollateralizationDetectorTest
+
+      - name: Run fork tests
+        run: forge test -vvv --no-match-contract CollateralizationDetectorTest
         env:
           MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
         if: ${{ secrets.MAINNET_RPC_URL != '' }}
