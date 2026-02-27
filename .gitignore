@@ -2,8 +2,7 @@
 cache/
 out/
 
-# Dependencies
-lib/
+# Dependencies (forge-std tracked as submodule)
 node_modules/
 
 # Environment variables

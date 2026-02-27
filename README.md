@@ -22,8 +22,11 @@ The repository includes both the original Proof-of-Concept and a **production-re
 ### Installation
 ```bash
 # Clone and install dependencies
+git clone --recurse-submodules <repo-url>
+cd Cryo
+
+# Or if already cloned:
 git submodule update --init --recursive
-forge install
 
 # Configure environment
 cp .env.template .env
