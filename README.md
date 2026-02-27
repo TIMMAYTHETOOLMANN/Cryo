@@ -1,8 +1,10 @@
-# 🔓 RESERVE PROTOCOL EXPLOIT DEMO
+# 🔓 RESERVE PROTOCOL EXPLOIT — MAINNET SYSTEM
 
 ## 📋 Overview
 
 This project demonstrates a **critical over-collateralized arbitrage vulnerability** in the Reserve Protocol's ETH+ token. The exploit allows attackers to mint ETH+ tokens and immediately redeem them for ~5.9% profit due to excess collateral backing.
+
+The repository includes both the original Proof-of-Concept and a **production-ready mainnet execution system** with Docker-based infrastructure, continuous monitoring, and automated execution.
 
 ## 🎯 Impact
 
@@ -13,8 +15,9 @@ This project demonstrates a **critical over-collateralized arbitrage vulnerabili
 ## 🛠️ Setup
 
 ### Prerequisites
-- Foundry (latest version)
-- Mainnet RPC endpoint (Alchemy/Infura recommended)
+- Docker & Docker Compose (for mainnet system)
+- Foundry (for local development)
+- Mainnet RPC endpoint (Alchemy, Infura, or QuickNode recommended)
 
 ### Installation
 ```bash
@@ -22,80 +25,126 @@ This project demonstrates a **critical over-collateralized arbitrage vulnerabili
 git submodule update --init --recursive
 forge install
 
-# Set your RPC URL
+# Configure environment
 cp .env.template .env
-# Edit .env with your MAINNET_RPC_URL
+# Edit .env with your MAINNET_RPC_URL, PRIVATE_KEY, and thresholds
 ```
 
-## 🚀 Quick Start
+## 🚀 Quick Start (POC)
 
 ### 1. Build the project
 ```bash
 forge build
 ```
 
-### 2. Run tests (recommended)
+### 2. Run tests
 ```bash
-# Run passing exploit demonstration
-forge test --match-path test/FullExploitPOC.t.sol -v
+# Run the full exploit demonstration
+forge test --match-contract FullExploitPOC -v
+
+# Run reconnaissance
+forge test --match-contract ReserveRecon -v
 
 # Run all tests
 forge test -v
 ```
 
-### 3. Execute live exploit demo
+### 3. Execute POC deploy script
 ```bash
-# Demonstrates exploit on mainnet fork
-forge script script/POCDeploy.s.sol
-
-# Shows profit calculations and executes mint/redeem
+forge script POCDeploy.s.sol
 ```
+
+## 🏗️ Mainnet System
+
+### Architecture
+
+The mainnet system converts the POC into a continuously running arbitrage executor:
+
+1. **Monitoring Loop** (`entrypoint.sh`): Polls the chain at a configurable interval.
+2. **Execution Script** (`script/MainnetExploit.s.sol`): Checks the trigger condition, acquires collateral via Uniswap V3, and executes the mint/redeem cycle.
+3. **Docker Infrastructure** (`Dockerfile` + `docker-compose.yml`): Isolated, reproducible environment with optional VPN routing.
+
+### Running with Docker
+
+```bash
+# Build and start the continuous monitor
+docker compose up --build -d
+
+# View logs
+docker compose logs -f arb-executor
+
+# Stop
+docker compose down
+```
+
+### Running Manually
+
+```bash
+# Single execution
+forge script script/MainnetExploit.s.sol:MainnetExploit \
+    --rpc-url "${MAINNET_RPC_URL}" \
+    --private-key "${PRIVATE_KEY}" \
+    --broadcast \
+    -vvv
+```
+
+### Configuration
+
+All settings are managed via `.env` (see `.env.template`):
+
+| Variable | Description | Default |
+|---|---|---|
+| `MAINNET_RPC_URL` | Ethereum RPC endpoint | — |
+| `PRIVATE_KEY` | Wallet private key | — |
+| `MIN_PROFIT_WEI` | Minimum profit to execute (wei) | `10000000000000000` (0.01 ETH) |
+| `GAS_PRICE_CAP_GWEI` | Max gas price (gwei) | `50` |
+| `POLL_INTERVAL` | Seconds between checks | `300` |
+
+### Network Isolation (VPN)
+
+To route all RPC traffic through ExpressVPN, uncomment the `vpn` service in `docker-compose.yml` and set your activation code. The executor container will then route through the VPN sidecar.
 
 ## 📁 Project Structure
 
 ```
-├── src/
-│   └── POC.sol              # Deployable exploit contract
+├── POC.sol                      # Original exploit contract
+├── POCDeploy.s.sol              # Original deployment script
+├── FullExploitPOC.t.sol         # Full exploit test suite
+├── ReserveRecon.t.sol           # Reconnaissance test
 ├── script/
-│   └── POCDeploy.s.sol      # Live demo script
-├── test/
-│   ├── FullExploitPOC.t.sol # Core exploit tests
-│   └── RealExploitTest.t.sol # Advanced testing
-├── reports/
-│   └── EXPLOIT_REPORT.md    # Detailed analysis
-└── foundry.toml             # Foundry configuration
-```
-
-## 🎬 Video Demo Commands
-
-```bash
-# 1. Show the exploit report
-cat reports/EXPLOIT_REPORT.md
-
-# 2. Run successful tests
-forge test --match-path test/FullExploitPOC.t.sol
-
-# 3. Execute live exploit on mainnet
-forge script script/POCDeploy.s.sol
-
-# 4. Build and verify
-forge build
+│   └── MainnetExploit.s.sol     # Mainnet execution script (the "brain")
+├── Dockerfile                   # Foundry container image
+├── docker-compose.yml           # Orchestration with optional VPN
+├── entrypoint.sh                # Continuous monitoring loop
+├── .env.template                # Environment variable template
+├── .gitignore                   # Git ignore rules
+├── foundry.toml                 # Foundry configuration
+└── README.md                    # This file
 ```
 
 ## 🔍 Technical Details
 
-### Root Cause
-The ETH+ Reserve Token is 5.9% over-collateralized (baskets_needed > total_supply), allowing profitable mint/redeem cycles.
+### Trigger Condition
+The exploit triggers when `Reserve.basketsNeeded() > totalSupply()`, indicating the protocol holds excess collateral (over-collateralization).
 
-### Exploit Flow
-1. **Mint Phase**: Deposit collateral → Receive ETH+ tokens
-2. **Redeem Phase**: Return ETH+ tokens → Receive MORE collateral value
-3. **Profit**: Difference between input/output collateral values
+### Execution Flow (MainnetExploit.s.sol)
+1. **Monitor**: Read `basketsNeeded` and `totalSupply` from ETH+.
+2. **Evaluate**: Skip if not over-collateralized or profit < gas + threshold.
+3. **Acquire Collateral**: Swap ETH → WETH → collateral tokens via Uniswap V3.
+4. **Approve**: Grant ETH+ contract spending allowance.
+5. **Mint**: Call `issue()` to create ETH+ backed by collateral.
+6. **Redeem**: Call `redeem()` to convert ETH+ back to raw collateral.
+7. **Profit**: Output collateral exceeds input due to over-collateralization.
 
-### Key Files
-- `POC.sol`: Main exploit contract with `executeExploit()` function
-- `POCDeploy.s.sol`: Script demonstrating live execution
-- `FullExploitPOC.t.sol`: Test suite proving exploit viability
+### Capital Management
+- The script estimates profit vs gas cost before executing.
+- A configurable `MIN_PROFIT_WEI` threshold prevents unprofitable trades.
+- A `GAS_PRICE_CAP_GWEI` cap prevents overpaying during network congestion.
+- 5% slippage tolerance is applied to DEX swaps.
+
+### Automation
+- **Docker Loop**: The `entrypoint.sh` runs `forge script` every `POLL_INTERVAL` seconds.
+- **Cloud Deployment**: The Docker image can be deployed to any cloud provider (AWS, GCP, Render) with a cron trigger or always-on container.
 
 ## ⚠️ Security Notice
 
