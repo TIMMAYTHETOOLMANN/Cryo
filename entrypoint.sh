@@ -9,36 +9,41 @@ if [ -f /app/.env ]; then
     set +a
 fi
 
-POLL_INTERVAL="${POLL_INTERVAL:-300}"
-DRY_RUN="${DRY_RUN:-false}"
+SCAN_INTERVAL="${SCAN_INTERVAL:-300}"
 VERBOSITY="${VERBOSITY:--vvv}"
 
-echo "=== Mainnet Arbitrage Monitor ==="
-echo "Poll interval: ${POLL_INTERVAL}s"
-echo "Gas price cap: ${GAS_PRICE_CAP_GWEI:-50} gwei"
-echo "Min profit: ${MIN_PROFIT_WEI:-10000000000000000} wei"
-echo "Dry run: ${DRY_RUN}"
+echo "=== OCDS Production Scanner ==="
+echo "Scan interval: ${SCAN_INTERVAL}s"
+echo "Networks: Ethereum, Arbitrum, Optimism, Polygon, Base, Avalanche, BSC, zkSync Era"
 echo "================================="
 
-BROADCAST_FLAG=""
-if [ "${DRY_RUN}" != "true" ]; then
-    BROADCAST_FLAG="--broadcast"
-fi
-
 while true; do
-    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Checking for arbitrage opportunity..."
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running production scan..."
 
-    if forge script script/MainnetExploit.s.sol:MainnetExploit \
-        --rpc-url "${MAINNET_RPC_URL}" \
-        --private-key "${PRIVATE_KEY}" \
-        ${BROADCAST_FLAG} \
-        --gas-price "${GAS_PRICE_CAP_GWEI:-50}gwei" \
-        ${VERBOSITY} 2>&1; then
-        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Execution completed."
+    # Run mainnet scanner if RPC URL is available
+    if [ -n "${MAINNET_RPC_URL:-}" ]; then
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Executing mainnet scanner..."
+        BROADCAST_FLAG=""
+        if [ -n "${PRIVATE_KEY:-}" ]; then
+            BROADCAST_FLAG="--private-key ${PRIVATE_KEY} --broadcast"
+        fi
+        if forge script script/MainnetScanner.s.sol:MainnetScanner \
+            --rpc-url "${MAINNET_RPC_URL}" \
+            ${BROADCAST_FLAG} \
+            ${VERBOSITY} 2>&1; then
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Mainnet scan completed."
+        else
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Mainnet scan encountered errors."
+        fi
     else
-        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] No opportunity or execution failed."
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] No MAINNET_RPC_URL set. Running unit tests only."
+        if forge test ${VERBOSITY} --match-contract "CollateralizationDetectorTest|CrossChainDetectorTest" 2>&1; then
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Unit tests passed."
+        else
+            echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Unit tests failed."
+        fi
     fi
 
-    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sleeping ${POLL_INTERVAL}s..."
-    sleep "${POLL_INTERVAL}"
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sleeping ${SCAN_INTERVAL}s..."
+    sleep "${SCAN_INTERVAL}"
 done

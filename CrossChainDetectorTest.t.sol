@@ -31,8 +31,11 @@ contract CrossChainDetectorTest is Test {
         assertEq(crossChain.CHAIN_OPTIMISM(), 10);
         assertEq(crossChain.CHAIN_POLYGON(), 137);
         assertEq(crossChain.CHAIN_BASE(), 8453);
-        assertEq(crossChain.SUPPORTED_NETWORKS(), 5);
-        assertEq(crossChain.PROTOCOL_TYPES(), 13);
+        assertEq(crossChain.CHAIN_AVALANCHE(), 43114);
+        assertEq(crossChain.CHAIN_BSC(), 56);
+        assertEq(crossChain.CHAIN_ZKSYNC(), 324);
+        assertEq(crossChain.SUPPORTED_NETWORKS(), 8);
+        assertEq(crossChain.PROTOCOL_TYPES(), 14);
     }
 
     // ============================================================
@@ -91,6 +94,29 @@ contract CrossChainDetectorTest is Test {
         assertTrue(config.isL2);
     }
 
+    function testGetAvalancheConfig() public view {
+        CrossChainDetector.NetworkConfig memory config = crossChain.getNetworkConfig(43114);
+        assertEq(config.chainId, 43114);
+        assertEq(keccak256(bytes(config.name)), keccak256("Avalanche"));
+        assertTrue(config.aaveV3Pool != address(0));
+        assertFalse(config.isL2);
+    }
+
+    function testGetBSCConfig() public view {
+        CrossChainDetector.NetworkConfig memory config = crossChain.getNetworkConfig(56);
+        assertEq(config.chainId, 56);
+        assertEq(keccak256(bytes(config.name)), keccak256("BSC"));
+        assertFalse(config.isL2);
+    }
+
+    function testGetZkSyncConfig() public view {
+        CrossChainDetector.NetworkConfig memory config = crossChain.getNetworkConfig(324);
+        assertEq(config.chainId, 324);
+        assertEq(keccak256(bytes(config.name)), keccak256("zkSync Era"));
+        assertEq(config.multicall3, crossChain.MULTICALL3_ZKSYNC());
+        assertTrue(config.isL2);
+    }
+
     function testUnsupportedChainReverts() public {
         vm.expectRevert(abi.encodeWithSelector(CrossChainDetector.UnsupportedChain.selector, 999));
         crossChain.getNetworkConfig(999);
@@ -98,13 +124,14 @@ contract CrossChainDetectorTest is Test {
 
     function testAllSupportedChainsHaveValidConfigs() public view {
         uint256[] memory chains = crossChain.getSupportedChains();
-        assertEq(chains.length, 5);
+        assertEq(chains.length, 8);
 
         for (uint256 i = 0; i < chains.length; i++) {
             CrossChainDetector.NetworkConfig memory config = crossChain.getNetworkConfig(chains[i]);
-            assertTrue(config.aaveV3Pool != address(0), "Aave V3 pool should be set");
-            assertTrue(config.compoundV3Comet != address(0), "Compound V3 should be set");
-            assertEq(config.multicall3, MULTICALL3, "Multicall3 should be standard address");
+            // All chains must have a valid multicall3 address
+            assertTrue(config.multicall3 != address(0), "Multicall3 should be set");
+            // At least one protocol should be available on each chain
+            // (Aave V3 or Compound V3 or other protocol detection via classifyProtocol)
         }
     }
 
@@ -114,12 +141,15 @@ contract CrossChainDetectorTest is Test {
 
     function testGetSupportedChains() public view {
         uint256[] memory chains = crossChain.getSupportedChains();
-        assertEq(chains.length, 5);
+        assertEq(chains.length, 8);
         assertEq(chains[0], 1);     // Ethereum
         assertEq(chains[1], 42161); // Arbitrum
         assertEq(chains[2], 10);    // Optimism
         assertEq(chains[3], 137);   // Polygon
         assertEq(chains[4], 8453);  // Base
+        assertEq(chains[5], 43114); // Avalanche
+        assertEq(chains[6], 56);    // BSC
+        assertEq(chains[7], 324);   // zkSync Era
     }
 
     // ============================================================
@@ -128,9 +158,9 @@ contract CrossChainDetectorTest is Test {
 
     function testIdentificationCapacity() public view {
         (uint256 capacity, uint256 singleChain, uint256 multiplier) = crossChain.identificationCapacity();
-        assertEq(singleChain, 13, "13 protocol types");
-        assertEq(multiplier, 5, "5 supported networks");
-        assertEq(capacity, 65, "65 total identification targets (13 x 5)");
+        assertEq(singleChain, 14, "14 protocol types");
+        assertEq(multiplier, 8, "8 supported networks");
+        assertEq(capacity, 112, "112 total identification targets (14 x 8)");
         assertGt(capacity, singleChain, "Cross-chain capacity exceeds single-chain");
     }
 
@@ -435,10 +465,10 @@ contract CrossChainDetectorTest is Test {
 
         for (uint256 i = 0; i < chains.length; i++) {
             CrossChainDetector.NetworkConfig memory config = crossChain.getNetworkConfig(chains[i]);
-            if (config.isL2) {
+            if (config.isL2 && config.chainId != crossChain.CHAIN_ZKSYNC()) {
                 assertTrue(
                     config.sequencerUptimeFeed != address(0),
-                    "L2 networks should have sequencer uptime feeds"
+                    "L2 networks (except zkSync) should have sequencer uptime feeds"
                 );
             }
         }

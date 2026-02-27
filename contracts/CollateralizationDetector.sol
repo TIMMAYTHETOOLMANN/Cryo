@@ -10,6 +10,7 @@ import "./interfaces/IChainlinkOracle.sol";
 import "./interfaces/IERC4626.sol";
 import "./interfaces/IUniswapV2.sol";
 import "./interfaces/IMulticall3.sol";
+import "./interfaces/IReserveProtocol.sol";
 import "./OracleIntegration.sol";
 import "./LPPricing.sol";
 
@@ -68,6 +69,18 @@ contract CollateralizationDetector {
         address token1;
     }
 
+    /// @notice Reserve Protocol RToken position data
+    struct RTokenPositionData {
+        uint256 totalSupply;           // Total RToken supply
+        uint256 basketsNeeded;         // Number of baskets needed to back supply
+        uint256 excessBaskets;         // basketsNeeded - totalSupply (0 if not over-collateralized)
+        uint256 collateralRatio;       // basketsNeeded / totalSupply scaled to 1e18
+        uint256 profitPerToken;        // Profit per token in basis points (1e18 scaled)
+        address[] collateralTokens;    // Basket collateral token addresses
+        uint256[] collateralAmounts;   // Required amounts per 1 RToken (1e18)
+        bool isOverCollateralized;     // True when basketsNeeded > totalSupply
+    }
+
     /// @notice Protocol type enum for heuristic classification
     enum ProtocolType {
         Unknown,
@@ -83,14 +96,17 @@ contract CollateralizationDetector {
         UniswapV3,
         CurvePool,
         BalancerV2,
-        ChainlinkOracle
+        ChainlinkOracle,
+        ReserveProtocol
     }
 
     // --- Over-Collateralization Thresholds (scaled to 1e18) ---
 
-    uint256 public constant WELL_COLLATERALIZED = 2e18;            // 200%
+    uint256 public constant AT_RISK = 1.2e18;                        // 120%
+    uint256 public constant WELL_COLLATERALIZED = 2e18;              // 200%
     uint256 public constant SIGNIFICANTLY_OVER_COLLATERALIZED = 3e18; // 300%
-    uint256 public constant EXTREMELY_CONSERVATIVE = 5e18;          // 500%
+    uint256 public constant EXTREMELY_CONSERVATIVE = 5e18;            // 500%
+    uint256 public constant EXTREME_OUTLIER = 10e18;                  // 1000%
 
     // --- Aave Detection ---
 
@@ -340,6 +356,79 @@ contract CollateralizationDetector {
         }
     }
 
+    // --- Reserve Protocol RToken Detection ---
+
+    /// @notice Reads Reserve Protocol RToken over-collateralization data
+    /// @dev Detects when basketsNeeded > totalSupply, indicating exploitable over-collateralization.
+    ///      This is the production equivalent of the POC exploit detection.
+    /// @param rToken The RToken contract address (e.g., ETH+ at 0xE72B141DF173b999AE7c1aDcbF60Cc9833Ce56a8)
+    /// @return data The RToken position data with collateral analysis
+    function getRTokenPosition(address rToken) external view returns (RTokenPositionData memory data) {
+        IRToken token = IRToken(rToken);
+
+        data.totalSupply = token.totalSupply();
+        data.basketsNeeded = uint256(token.basketsNeeded());
+
+        if (data.totalSupply > 0) {
+            // Calculate collateral ratio (basketsNeeded / totalSupply)
+            data.collateralRatio = (data.basketsNeeded * 1e18) / data.totalSupply;
+        }
+
+        // Detect over-collateralization
+        if (data.basketsNeeded > data.totalSupply) {
+            data.isOverCollateralized = true;
+            data.excessBaskets = data.basketsNeeded - data.totalSupply;
+            // Profit per token in 1e18 basis (excess / supply)
+            if (data.totalSupply > 0) {
+                data.profitPerToken = (data.excessBaskets * 1e18) / data.totalSupply;
+            }
+        }
+
+        // Get collateral quote for 1 RToken (basket composition)
+        try token.main() returns (address mainAddr) {
+            try IMain(mainAddr).basketHandler() returns (address handler) {
+                try IBasketHandler(handler).quote(uint192(1e18), 0) returns (
+                    address[] memory tokens,
+                    uint256[] memory amounts
+                ) {
+                    data.collateralTokens = tokens;
+                    data.collateralAmounts = amounts;
+                } catch {}
+            } catch {}
+        } catch {}
+    }
+
+    /// @notice Calculates the maximum extractable value from an over-collateralized RToken
+    /// @dev Production-grade profit analysis replacing the POC calculateMaxProfit
+    /// @param rToken The RToken contract address
+    /// @param basketValueUsd The estimated USD value per basket (1e18 scaled, e.g., 1800e18)
+    /// @return excessBaskets Number of excess baskets beyond what's needed
+    /// @return profitBps Profit per token in basis points
+    /// @return totalProfitUsd Estimated total extractable profit in USD (1e18 scaled)
+    /// @return isOpportunity True if over-collateralized
+    function analyzeRTokenProfitability(address rToken, uint256 basketValueUsd)
+        external
+        view
+        returns (
+            uint256 excessBaskets,
+            uint256 profitBps,
+            uint256 totalProfitUsd,
+            bool isOpportunity
+        )
+    {
+        IRToken token = IRToken(rToken);
+
+        uint256 supply = token.totalSupply();
+        uint256 needed = uint256(token.basketsNeeded());
+
+        if (needed > supply && supply > 0) {
+            isOpportunity = true;
+            excessBaskets = needed - supply;
+            profitBps = (excessBaskets * 10000) / supply;
+            totalProfitUsd = (excessBaskets * basketValueUsd) / 1e18;
+        }
+    }
+
     // --- Heuristic Protocol Classification ---
 
     /// @notice Attempts to classify an unknown contract by probing known DeFi selectors
@@ -350,6 +439,14 @@ contract CollateralizationDetector {
         // Check getReserves() → Uniswap v2 pair (0x0902f1ac)
         (bool success,) = target.staticcall(abi.encodeWithSelector(0x0902f1ac));
         if (success) return ProtocolType.UniswapV2;
+
+        // Check basketsNeeded() → Reserve Protocol RToken (0x77d9f986)
+        (success,) = target.staticcall(abi.encodeWithSelector(IRToken.basketsNeeded.selector));
+        if (success) {
+            // Also verify main() exists to confirm Reserve Protocol
+            (bool hasMain,) = target.staticcall(abi.encodeWithSelector(IRToken.main.selector));
+            if (hasMain) return ProtocolType.ReserveProtocol;
+        }
 
         // Check totalAssets() → ERC-4626 vault (0x01e1d114)
         (success,) = target.staticcall(abi.encodeWithSelector(0x01e1d114));
@@ -414,12 +511,15 @@ contract CollateralizationDetector {
 
     /// @notice Classifies the over-collateralization level
     /// @param collateralRatio The collateral ratio (1e18 = 100%)
-    /// @return level 0=under, 1=normal, 2=well, 3=significant, 4=extreme
+    /// @return level 0=under, 1=at-risk(100-120%), 2=normal(120-200%), 3=well(200-300%),
+    ///               4=significant(300-500%), 5=extreme(500-1000%), 6=outlier(>1000%)
     function classifyCollateralization(uint256 collateralRatio) external pure returns (uint8 level) {
-        if (collateralRatio >= EXTREMELY_CONSERVATIVE) return 4;
-        if (collateralRatio >= SIGNIFICANTLY_OVER_COLLATERALIZED) return 3;
-        if (collateralRatio >= WELL_COLLATERALIZED) return 2;
-        if (collateralRatio >= 1e18) return 1; // 100% = just collateralized
+        if (collateralRatio >= EXTREME_OUTLIER) return 6;
+        if (collateralRatio >= EXTREMELY_CONSERVATIVE) return 5;
+        if (collateralRatio >= SIGNIFICANTLY_OVER_COLLATERALIZED) return 4;
+        if (collateralRatio >= WELL_COLLATERALIZED) return 3;
+        if (collateralRatio >= AT_RISK) return 2;
+        if (collateralRatio >= 1e18) return 1; // 100-120% = at risk
         return 0; // Under-collateralized
     }
 }

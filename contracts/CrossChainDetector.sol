@@ -15,8 +15,8 @@ import "./interfaces/IMulticall3.sol";
 ///      for efficient batch reads on each network.
 ///
 ///      Identification surface = protocolTypes × supportedNetworks
-///      Single chain: 13 protocol types
-///      Cross-chain:  13 protocol types × 5 networks = 65 identification targets
+///      Single chain: 14 protocol types
+///      Cross-chain:  14 protocol types × 8 networks = 112 identification targets
 contract CrossChainDetector {
     using OracleIntegration for address;
 
@@ -64,15 +64,21 @@ contract CrossChainDetector {
     uint256 public constant CHAIN_OPTIMISM = 10;
     uint256 public constant CHAIN_POLYGON = 137;
     uint256 public constant CHAIN_BASE = 8453;
+    uint256 public constant CHAIN_AVALANCHE = 43114;
+    uint256 public constant CHAIN_BSC = 56;
+    uint256 public constant CHAIN_ZKSYNC = 324;
 
     /// @notice Number of supported networks
-    uint256 public constant SUPPORTED_NETWORKS = 5;
+    uint256 public constant SUPPORTED_NETWORKS = 8;
 
     /// @notice Number of protocol types (excluding Unknown)
-    uint256 public constant PROTOCOL_TYPES = 13;
+    uint256 public constant PROTOCOL_TYPES = 14;
 
     // --- Standard Multicall3 address (same on most chains) ---
     address public constant MULTICALL3 = 0xcA11bde05977b3631167028862bE2a173976CA11;
+
+    // --- zkSync Era Multicall3 (different deterministic deployment) ---
+    address public constant MULTICALL3_ZKSYNC = 0xF9cda624FBC7e059355ce98a31693d299FACd963;
 
     // --- L2 Sequencer Safety ---
     uint256 public constant L2_SEQUENCER_GRACE_PERIOD = 3600; // 1 hour
@@ -123,6 +129,23 @@ contract CrossChainDetector {
             config.compoundV3Comet = 0xb125E6687d4313864e53df431d5425969c15Eb2F;
             config.sequencerUptimeFeed = 0xBCF85224fc0756B9Fa45aAb7d157a8263913aEcC;
             config.isL2 = true;
+        } else if (chainId == CHAIN_AVALANCHE) {
+            config.name = "Avalanche";
+            config.aaveV3Pool = 0x794a61358D6845594F94dc1DB02A252b5b4814aD;
+            config.compoundV3Comet = address(0); // No Compound V3 on Avalanche
+            config.isL2 = false;
+        } else if (chainId == CHAIN_BSC) {
+            config.name = "BSC";
+            config.aaveV3Pool = address(0); // No Aave V3 on BSC
+            config.compoundV3Comet = address(0); // No Compound V3 on BSC
+            config.isL2 = false;
+        } else if (chainId == CHAIN_ZKSYNC) {
+            config.name = "zkSync Era";
+            config.aaveV3Pool = address(0); // No Aave V3 on zkSync
+            config.compoundV3Comet = address(0); // No Compound V3 on zkSync
+            config.multicall3 = MULTICALL3_ZKSYNC;
+            config.isL2 = true;
+            config.sequencerUptimeFeed = address(0); // No sequencer feed available yet
         } else {
             revert UnsupportedChain(chainId);
         }
@@ -137,6 +160,9 @@ contract CrossChainDetector {
         chains[2] = CHAIN_OPTIMISM;
         chains[3] = CHAIN_POLYGON;
         chains[4] = CHAIN_BASE;
+        chains[5] = CHAIN_AVALANCHE;
+        chains[6] = CHAIN_BSC;
+        chains[7] = CHAIN_ZKSYNC;
     }
 
     // --- L2 Sequencer Safety ---

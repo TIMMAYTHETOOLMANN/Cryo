@@ -6,13 +6,13 @@ WORKDIR /app
 COPY foundry.toml .
 COPY .gitmodules .
 COPY lib/ lib/
-COPY POC.sol .
-COPY POCDeploy.s.sol .
-COPY FullExploitPOC.t.sol .
-COPY ReserveRecon.t.sol .
-COPY CollateralizationDetector.t.sol .
 COPY contracts/ contracts/
 COPY script/ script/
+COPY CollateralizationDetector.t.sol .
+COPY CrossChainDetectorTest.t.sol .
+
+# Build contracts
+RUN forge build
 
 # Copy and set up entrypoint
 COPY entrypoint.sh /app/entrypoint.sh
