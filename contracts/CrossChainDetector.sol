@@ -338,7 +338,7 @@ contract CrossChainDetector {
     /// @notice Calculates the total target contract identification capacity
     /// @dev Cross-chain detection multiplies identification surface:
     ///      capacity = protocolTypes × supportedNetworks
-    ///      This represents the exponential increase in identification capability
+    ///      This represents a multiplicative increase in identification capability
     ///      compared to single-chain detection
     /// @return capacity Total identification targets across all networks
     /// @return singleChainCapacity Identification targets on a single chain

@@ -359,7 +359,7 @@ contract CrossChainDetectorTest is Test {
         CrossChainDetector.CrossChainAggregation memory agg = crossChain.aggregateResults(results);
 
         assertEq(agg.totalNetworksScanned, 2, "Only 2 unique chains");
-        assertEq(agg.networksWithOverCollateralization, 3, "All 3 are over-collateralized");
+        assertEq(agg.networksWithOverCollateralization, 3, "All 3 positions are over-collateralized");
         assertEq(agg.totalTargetsIdentified, 3, "All 3 targets identified");
         assertEq(agg.highestCollateralRatio, 6e18, "Highest is 600%");
         assertEq(agg.lowestCollateralRatio, 2.5e18, "Lowest is 250%");
