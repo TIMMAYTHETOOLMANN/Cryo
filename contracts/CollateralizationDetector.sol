@@ -88,9 +88,11 @@ contract CollateralizationDetector {
 
     // --- Over-Collateralization Thresholds (scaled to 1e18) ---
 
-    uint256 public constant WELL_COLLATERALIZED = 2e18;            // 200%
+    uint256 public constant AT_RISK = 1.2e18;                        // 120%
+    uint256 public constant WELL_COLLATERALIZED = 2e18;              // 200%
     uint256 public constant SIGNIFICANTLY_OVER_COLLATERALIZED = 3e18; // 300%
-    uint256 public constant EXTREMELY_CONSERVATIVE = 5e18;          // 500%
+    uint256 public constant EXTREMELY_CONSERVATIVE = 5e18;            // 500%
+    uint256 public constant EXTREME_OUTLIER = 10e18;                  // 1000%
 
     // --- Aave Detection ---
 
@@ -414,12 +416,15 @@ contract CollateralizationDetector {
 
     /// @notice Classifies the over-collateralization level
     /// @param collateralRatio The collateral ratio (1e18 = 100%)
-    /// @return level 0=under, 1=normal, 2=well, 3=significant, 4=extreme
+    /// @return level 0=under, 1=at-risk(100-120%), 2=normal(120-200%), 3=well(200-300%),
+    ///               4=significant(300-500%), 5=extreme(500-1000%), 6=outlier(>1000%)
     function classifyCollateralization(uint256 collateralRatio) external pure returns (uint8 level) {
-        if (collateralRatio >= EXTREMELY_CONSERVATIVE) return 4;
-        if (collateralRatio >= SIGNIFICANTLY_OVER_COLLATERALIZED) return 3;
-        if (collateralRatio >= WELL_COLLATERALIZED) return 2;
-        if (collateralRatio >= 1e18) return 1; // 100% = just collateralized
+        if (collateralRatio >= EXTREME_OUTLIER) return 6;
+        if (collateralRatio >= EXTREMELY_CONSERVATIVE) return 5;
+        if (collateralRatio >= SIGNIFICANTLY_OVER_COLLATERALIZED) return 4;
+        if (collateralRatio >= WELL_COLLATERALIZED) return 3;
+        if (collateralRatio >= AT_RISK) return 2;
+        if (collateralRatio >= 1e18) return 1; // 100-120% = at risk
         return 0; // Under-collateralized
     }
 }

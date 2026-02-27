@@ -1,46 +1,22 @@
 version: "3.8"
 
 services:
-  arb-executor:
+  ocds-scanner:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: mainnet-arb-executor
+    container_name: ocds-scanner
     env_file:
       - .env
-    volumes:
-      - ./.env:/app/.env:ro
     restart: unless-stopped
     networks:
-      - arb-network
+      - ocds-network
     logging:
       driver: json-file
       options:
-        max-size: "10m"
-        max-file: "3"
-
-  # Optional: ExpressVPN sidecar for network isolation
-  # Uncomment and configure with your ExpressVPN activation code
-  # vpn:
-  #   image: polkaned/expressvpn
-  #   container_name: expressvpn
-  #   environment:
-  #     - ACTIVATION_CODE=YOUR_EXPRESSVPN_CODE
-  #     - SERVER=smart
-  #   cap_add:
-  #     - NET_ADMIN
-  #   devices:
-  #     - /dev/net/tun
-  #   networks:
-  #     - arb-network
-  #   restart: unless-stopped
-
-  # When using VPN, update arb-executor to route through it:
-  # arb-executor:
-  #   network_mode: "service:vpn"
-  #   depends_on:
-  #     - vpn
+        max-size: "50m"
+        max-file: "5"
 
 networks:
-  arb-network:
+  ocds-network:
     driver: bridge

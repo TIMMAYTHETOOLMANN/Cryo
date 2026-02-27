@@ -9,36 +9,23 @@ if [ -f /app/.env ]; then
     set +a
 fi
 
-POLL_INTERVAL="${POLL_INTERVAL:-300}"
-DRY_RUN="${DRY_RUN:-false}"
+SCAN_INTERVAL="${SCAN_INTERVAL:-300}"
 VERBOSITY="${VERBOSITY:--vvv}"
 
-echo "=== Mainnet Arbitrage Monitor ==="
-echo "Poll interval: ${POLL_INTERVAL}s"
-echo "Gas price cap: ${GAS_PRICE_CAP_GWEI:-50} gwei"
-echo "Min profit: ${MIN_PROFIT_WEI:-10000000000000000} wei"
-echo "Dry run: ${DRY_RUN}"
+echo "=== OCDS Production Scanner ==="
+echo "Scan interval: ${SCAN_INTERVAL}s"
+echo "Networks: Ethereum, Arbitrum, Optimism, Polygon, Base, Avalanche, BSC, zkSync Era"
 echo "================================="
 
-BROADCAST_FLAG=""
-if [ "${DRY_RUN}" != "true" ]; then
-    BROADCAST_FLAG="--broadcast"
-fi
-
 while true; do
-    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Checking for arbitrage opportunity..."
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Running detection scan..."
 
-    if forge script script/MainnetExploit.s.sol:MainnetExploit \
-        --rpc-url "${MAINNET_RPC_URL}" \
-        --private-key "${PRIVATE_KEY}" \
-        ${BROADCAST_FLAG} \
-        --gas-price "${GAS_PRICE_CAP_GWEI:-50}gwei" \
-        ${VERBOSITY} 2>&1; then
-        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Execution completed."
+    if forge test ${VERBOSITY} --match-contract "CollateralizationDetectorTest|CrossChainDetectorTest" 2>&1; then
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Scan completed successfully."
     else
-        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] No opportunity or execution failed."
+        echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Scan encountered errors."
     fi
 
-    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sleeping ${POLL_INTERVAL}s..."
-    sleep "${POLL_INTERVAL}"
+    echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] Sleeping ${SCAN_INTERVAL}s..."
+    sleep "${SCAN_INTERVAL}"
 done

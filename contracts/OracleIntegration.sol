@@ -63,6 +63,22 @@ library OracleIntegration {
         price = uint256(answer);
     }
 
+    /// @notice Reads a price with standard heartbeat-based staleness validation
+    /// @dev Uses 1.5x heartbeat as staleness threshold per OCDS spec
+    /// @param feed The Chainlink aggregator address
+    /// @param heartbeatSeconds The feed's standard heartbeat interval
+    /// @return price The price as uint256
+    /// @return decimals The number of decimals
+    function getPriceWithHeartbeat(address feed, uint256 heartbeatSeconds)
+        internal
+        view
+        returns (uint256 price, uint8 decimals)
+    {
+        // Use 1.5x heartbeat as staleness threshold
+        uint256 maxStaleness = (heartbeatSeconds * 3) / 2;
+        return getValidatedPrice(feed, maxStaleness);
+    }
+
     /// @notice Calculates the USD value of a token amount using a Chainlink feed
     /// @dev Uses 18-decimal fixed-point output to avoid precision loss
     /// @param tokenAmountRaw Raw token balance (in token's native decimals)

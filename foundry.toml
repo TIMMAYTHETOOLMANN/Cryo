@@ -12,6 +12,9 @@ arbitrum = "${ARBITRUM_RPC_URL}"
 optimism = "${OPTIMISM_RPC_URL}"
 polygon = "${POLYGON_RPC_URL}"
 base = "${BASE_RPC_URL}"
+avalanche = "${AVALANCHE_RPC_URL}"
+bsc = "${BSC_RPC_URL}"
+zksync = "${ZKSYNC_RPC_URL}"
 
 [fuzz]
 runs = 1000

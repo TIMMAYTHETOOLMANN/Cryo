@@ -32,9 +32,11 @@ contract CollateralizationDetectorTest is Test {
     // ============================================================
 
     function testCollateralizationThresholds() public view {
+        assertEq(detector.AT_RISK(), 1.2e18);
         assertEq(detector.WELL_COLLATERALIZED(), 2e18);
         assertEq(detector.SIGNIFICANTLY_OVER_COLLATERALIZED(), 3e18);
         assertEq(detector.EXTREMELY_CONSERVATIVE(), 5e18);
+        assertEq(detector.EXTREME_OUTLIER(), 10e18);
     }
 
     function testClassifyCollateralization() public view {
@@ -42,32 +44,42 @@ contract CollateralizationDetectorTest is Test {
         assertEq(detector.classifyCollateralization(0.5e18), 0);
         assertEq(detector.classifyCollateralization(0), 0);
 
-        // Just collateralized (100-200%)
+        // At-risk (100-120%)
         assertEq(detector.classifyCollateralization(1e18), 1);
-        assertEq(detector.classifyCollateralization(1.5e18), 1);
+        assertEq(detector.classifyCollateralization(1.1e18), 1);
+
+        // Normal (120-200%)
+        assertEq(detector.classifyCollateralization(1.2e18), 2);
+        assertEq(detector.classifyCollateralization(1.5e18), 2);
 
         // Well-collateralized (200-300%)
-        assertEq(detector.classifyCollateralization(2e18), 2);
-        assertEq(detector.classifyCollateralization(2.5e18), 2);
+        assertEq(detector.classifyCollateralization(2e18), 3);
+        assertEq(detector.classifyCollateralization(2.5e18), 3);
 
         // Significantly over-collateralized (300-500%)
-        assertEq(detector.classifyCollateralization(3e18), 3);
-        assertEq(detector.classifyCollateralization(4e18), 3);
+        assertEq(detector.classifyCollateralization(3e18), 4);
+        assertEq(detector.classifyCollateralization(4e18), 4);
 
-        // Extremely conservative (> 500%)
-        assertEq(detector.classifyCollateralization(5e18), 4);
-        assertEq(detector.classifyCollateralization(10e18), 4);
+        // Extremely conservative (500-1000%)
+        assertEq(detector.classifyCollateralization(5e18), 5);
+        assertEq(detector.classifyCollateralization(8e18), 5);
+
+        // Extreme outlier (> 1000%)
+        assertEq(detector.classifyCollateralization(10e18), 6);
+        assertEq(detector.classifyCollateralization(50e18), 6);
     }
 
     function testFuzzClassifyCollateralization(uint256 ratio) public view {
         uint8 level = detector.classifyCollateralization(ratio);
-        assertTrue(level <= 4);
+        assertTrue(level <= 6);
 
         if (ratio < 1e18) assertEq(level, 0);
-        else if (ratio < 2e18) assertEq(level, 1);
-        else if (ratio < 3e18) assertEq(level, 2);
-        else if (ratio < 5e18) assertEq(level, 3);
-        else assertEq(level, 4);
+        else if (ratio < 1.2e18) assertEq(level, 1);
+        else if (ratio < 2e18) assertEq(level, 2);
+        else if (ratio < 3e18) assertEq(level, 3);
+        else if (ratio < 5e18) assertEq(level, 4);
+        else if (ratio < 10e18) assertEq(level, 5);
+        else assertEq(level, 6);
     }
 
     // ============================================================
