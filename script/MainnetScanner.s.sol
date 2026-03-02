@@ -67,12 +67,12 @@ contract MainnetScanner is Script {
         // --- Phase 1: Reconnaissance (scan all known RTokens) ---
         console.log("=== Phase 1: Reserve Protocol Reconnaissance ===");
         
-        // Initial seeds
+        // Initial seeds — all confirmed Reserve Protocol RToken addresses
         _addRToken(ETH_PLUS);
         _addRToken(E_USD);
-        _addRToken(0xac3E018457B222d93114458476f3E3416Abbe38F); // sfrxETH
-        _addRToken(0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0); // wstETH
-        _addRToken(0xae78736Cd615f374D3085123A210448E74Fc6393); // rETH
+        _addRToken(0xaCdf0DBA4B9839b96221a8487e9ca660a48212be); // hyUSD
+        _addRToken(0xCC7FF230365bD730eE4B352cC2492CEdAC49383e); // USD3
+        _addRToken(0x78da5799CF427Fee11e9996982F4150eCe7a99A7); // dgnETH
 
         // Adaptive discovery
         // _discoverMore();

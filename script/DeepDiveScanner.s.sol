@@ -179,20 +179,24 @@ contract DeepDiveScanner is Script {
     }
 
     function _getTokenSymbol(address token) internal pure returns (string memory) {
-        if (token == 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee) return "USDC";
-        if (token == 0xA35b1B31Ce002FBF2058D22F30f95D405200A15b) return "sUSDe";
-        if (token == 0xac3E018457B222d93114458476f3E3416Abbe38F) return "sfETH";
-        if (token == 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0) return "wstETH";
-        if (token == 0xae78736Cd615f374D3085123A210448E74Fc6393) return "rETH";
+        if (token == 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee) return "weETH";   // Ether.fi Wrapped ETH
+        if (token == 0xA35b1B31Ce002FBF2058D22F30f95D405200A15b) return "ETHx";    // Stader ETHx
+        if (token == 0xac3E018457B222d93114458476f3E3416Abbe38F) return "sfrxETH"; // Frax Staked ETH
+        if (token == 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0) return "wstETH";  // Lido Wrapped Staked ETH
+        if (token == 0xae78736Cd615f374D3085123A210448E74Fc6393) return "rETH";    // Rocket Pool ETH
         if (token == 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2) return "WETH";
-        if (token == 0x27F2f159Fe990Ba83D57f39Fd69661764BEbf37a) return "USDC";
-        if (token == 0xEB74EC1d4C1DAB412D5d6674F6833FD19d3118Ce) return "USDT";
-        if (token == 0x0aDc69041a2B086f8772aCcE2A754f410F211bed) return "DAI";
+        if (token == 0x27F2f159Fe990Ba83D57f39Fd69661764BEbf37a) return "cUSDC";   // Reserve collateral
+        if (token == 0xEB74EC1d4C1DAB412D5d6674F6833FD19d3118Ce) return "cUSDT";   // Reserve collateral
+        if (token == 0x0aDc69041a2B086f8772aCcE2A754f410F211bed) return "cDAI";    // Reserve collateral
         return "UNKNOWN";
     }
 
     function _getOracleForToken(address token) internal pure returns (address) {
-        if (token == 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee) return ETH_USD_FEED; // USDC
+        if (token == 0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee) return ETH_USD_FEED; // weETH (ETH-denominated)
+        if (token == 0xA35b1B31Ce002FBF2058D22F30f95D405200A15b) return ETH_USD_FEED; // ETHx (ETH-denominated)
+        if (token == 0xac3E018457B222d93114458476f3E3416Abbe38F) return ETH_USD_FEED; // sfrxETH (ETH-denominated)
+        if (token == 0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0) return ETH_USD_FEED; // wstETH (ETH-denominated)
+        if (token == 0xae78736Cd615f374D3085123A210448E74Fc6393) return ETH_USD_FEED; // rETH (ETH-denominated)
         if (token == 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2) return ETH_USD_FEED; // WETH
         return address(0);
     }
