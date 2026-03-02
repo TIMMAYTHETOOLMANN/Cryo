@@ -28,6 +28,7 @@ from ..flash_loan_providers.aggregator import (
     FlashLoanAggregator,
     FlashLoanProviderType,
     get_flash_loan_aggregator,
+    get_provider_registry,
 )
 from ..calculators.profitability_calculator import (
     ProfitabilityCalculator,
@@ -320,8 +321,9 @@ class LiquidationExecutor:
             f"(ROI {profitability.roi_percent:.1f}%)"
         )
 
-        # ---- 2. Select flash loan provider ----
-        if request.flash_loan_provider is None:
+        # ---- 2. Select flash loan provider (adaptive: uses success history) ----
+        selected_provider: Optional[FlashLoanProviderType] = request.flash_loan_provider
+        if selected_provider is None:
             quote = await self.flash_aggregator.get_best_quote(
                 chain_id=chain_id,
                 asset=request.debt_asset,
@@ -330,6 +332,7 @@ class LiquidationExecutor:
             )
             if not quote:
                 return self._fail(request, "No flash loan provider available")
+            selected_provider = quote.provider
             logger.info(f"⚡ Best provider: {quote.provider.value} (fee {quote.fee_percentage*100:.3f}%)")
         else:
             logger.info(f"⚡ Using requested provider: {request.flash_loan_provider.value}")
@@ -338,7 +341,20 @@ class LiquidationExecutor:
         logger.info("⚡ PRODUCTION MODE — submitting transaction directly")
 
         # ---- 4. Submit transaction ----
+        _submit_start = time.monotonic()
         result = await self._submit_transaction(request, w3, private_key)
+        submit_latency_ms = (time.monotonic() - _submit_start) * 1000
+
+        # ---- 5. Feed execution outcome back into ProviderRegistry ----
+        #        This enables best_quote_adaptive() to learn over time and
+        #        deprioritise providers with poor historical success rates.
+        registry = get_provider_registry()
+        registry.record_result(
+            selected_provider,
+            success=result.success,
+            amount=request.debt_amount,
+            latency_ms=submit_latency_ms,
+        )
 
         if result.success:
             self.stats["liquidations_succeeded"] += 1
