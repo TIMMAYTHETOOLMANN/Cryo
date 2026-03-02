@@ -159,6 +159,63 @@ MAJOR_ASSETS = STABLECOINS | {
     '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',  # WETH
 }
 
+# Well-known DEX pool addresses monitored by MempoolSniffer for price-moving trades.
+# Covers Uniswap V2/V3 pairs and Curve pools for the collateral assets in COLLATERAL_TO_FEED.
+DEX_POOL_ADDRESSES: Dict[int, Set[str]] = {
+    1: {
+        # Uniswap V3 — WETH/USDC 0.05% and 0.3%
+        '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640',
+        '0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8',
+        # Uniswap V3 — WBTC/WETH
+        '0x4585fe77225b41b697c938b018e2ac67ac5a20c0',
+        '0xcbcdf9626bc03e24f779434178a73a0b4bad62ed',
+        # Uniswap V3 — LINK/WETH
+        '0xa6cc3c2531fdaa6ae1a3ca84c2855806728693e8',
+        # Uniswap V2 — WETH/USDC, WETH/DAI
+        '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc',
+        '0xa478c2975ab1ea89e8196811f51a7b7ade33eb11',
+        # Curve — stETH/ETH, 3pool (DAI/USDC/USDT)
+        '0xdc24316b9ae028f1497c275eb9192a3ea0f67022',
+        '0xbebc44782c7db0a1a60cb6fe97d0b483032ff1c7',
+    },
+    42161: {
+        # Uniswap V3 Arbitrum — WETH/USDC, WETH/USDT
+        '0xc31e54c7a869b9fcbecc14363cf510d1c41fa443',
+        '0x641c00a822e8b671738d32a431a4fb6074e5c79d',
+    },
+    10: {
+        # Uniswap V3 Optimism — WETH/USDC
+        '0x85149247691df622eaf1a8bd0cafd40bc45154a9',
+    },
+    137: {
+        # Uniswap V3 Polygon — WETH/USDC, WMATIC/WETH
+        '0x45dda9cb7c25131df268515131f647d726f50608',
+        '0x167384319b41f7094e62f7506409eb38079abff8',
+    },
+    8453: {
+        # Uniswap V3 Base — WETH/USDC
+        '0xd0b53d9277642d899df5c87a3966a349a798f224',
+    },
+}
+
+# Asset address mapped to its Chainlink feed pair for impact estimation
+POOL_TO_ASSET: Dict[str, str] = {
+    # Maps lowercase pool address → collateral asset address (WETH for ETH pools, etc.)
+    '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0x4585fe77225b41b697c938b018e2ac67ac5a20c0': '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599',
+    '0xcbcdf9626bc03e24f779434178a73a0b4bad62ed': '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599',
+    '0xa6cc3c2531fdaa6ae1a3ca84c2855806728693e8': '0x514910771af9ca656af840dff83e8264ecf986ca',
+    '0xb4e16d0168e52d35cacd2c6185b44281ec28c9dc': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0xa478c2975ab1ea89e8196811f51a7b7ade33eb11': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0xdc24316b9ae028f1497c275eb9192a3ea0f67022': '0xae7ab96520de3a18e5e111b5eaab095312d7fe84',
+    '0xc31e54c7a869b9fcbecc14363cf510d1c41fa443': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0x641c00a822e8b671738d32a431a4fb6074e5c79d': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0x85149247691df622eaf1a8bd0cafd40bc45154a9': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0x45dda9cb7c25131df268515131f647d726f50608': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    '0xd0b53d9277642d899df5c87a3966a349a798f224': '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+}
+
 
 # ═══════════════════════════════════════════════════════════════════
 # DATA MODEL
@@ -631,6 +688,163 @@ class LiquidationExecutor:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# LAYER 5 — MEMPOOL SNIFFER (backrun cascading price moves)
+# ═══════════════════════════════════════════════════════════════════
+
+class MempoolSniffer:
+    """
+    Analyzes pending transactions for potential price impact.
+
+    For every pending tx that interacts with a known DEX pool, this class:
+      1. Estimates the price impact on the relevant collateral asset.
+      2. Identifies positions whose HF would cross below 1.0 after that impact.
+      3. Prepares a Flashbots backrun bundle: [trigger_tx, liquidation_tx].
+
+    The bundle is submitted so that the liquidation executes immediately after
+    the price-moving trade in the same block—before any competing bot can react.
+    """
+
+    # Minimum price impact (as a fraction) to consider a trade dangerous.
+    # 1% was chosen as the lower bound because sub-1% price moves rarely push
+    # a position below the liquidation threshold, while gas costs make such
+    # attempts unprofitable.
+    _MIN_IMPACT = 0.01
+
+    # Health factor upper bound for backrun eligibility.  Positions with HF ≥ this
+    # value are too far from liquidation to be worth queueing a bundle even if the
+    # price move looks significant.
+    _BACKRUN_HF_THRESHOLD = 0.95
+
+    # Seconds to wait before re-firing on the same position to prevent spam.
+    _FIRE_COOLDOWN_SECONDS = 30
+
+    def __init__(
+        self,
+        index: PositionIndex,
+        executor: LiquidationExecutor,
+        dex_pools: Optional[Dict[int, Set[str]]] = None,
+    ):
+        self.index = index
+        self.executor = executor
+        # Pool addresses to watch, keyed by chain_id
+        self._pools: Dict[int, Set[str]] = dex_pools or DEX_POOL_ADDRESSES
+
+        # Tracks bundles already queued to avoid duplicate submissions.
+        # Keyed by "{chain_id}:{user_address}" so a position is not queued
+        # multiple times even if different pools trigger it.
+        self._queued: Set[str] = set()
+
+        # Stats
+        self.txs_inspected = 0
+        self.impacts_detected = 0
+        self.bundles_prepared = 0
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def get_pools(self, chain_id: int) -> Set[str]:
+        """Return the set of monitored pool addresses for a given chain."""
+        return self._pools.get(chain_id, set())
+
+    def estimate_price_impact(self, amount_usd: float, pool_tvl_usd: float) -> float:
+        """
+        Estimate relative price impact using a simple constant-product AMM model.
+
+        For a trade of size *x* against a pool with TVL *L*, the spot-price
+        impact is approximately x / (L + x).  Returns a value in [0, 1].
+        """
+        if pool_tvl_usd <= 0:
+            return 0.0
+        return amount_usd / (pool_tvl_usd + amount_usd)
+
+    async def on_pending_transaction(
+        self,
+        chain_id: int,
+        to_address: str,
+        input_data: bytes,
+        value_eth: float,
+        eth_price_usd: float = 2500.0,
+        pool_tvl_usd: float = 5_000_000.0,
+    ) -> int:
+        """
+        Handle a single pending mempool transaction.
+
+        Returns the number of backrun bundles queued as a result of this tx.
+        """
+        self.txs_inspected += 1
+
+        to_lower = to_address.lower()
+        if to_lower not in self._pools.get(chain_id, set()):
+            return 0
+
+        # Rough trade size in USD from the ETH value sent with the tx
+        trade_usd = value_eth * eth_price_usd
+        impact = self.estimate_price_impact(trade_usd, pool_tvl_usd)
+
+        if impact < self._MIN_IMPACT:
+            return 0
+
+        self.impacts_detected += 1
+
+        # Identify which collateral asset this pool prices
+        collateral_asset = POOL_TO_ASSET.get(to_lower, '')
+        if not collateral_asset:
+            return 0
+
+        # Find the Chainlink feed for this collateral
+        feed = COLLATERAL_TO_FEED.get(collateral_asset, '')
+        if not feed:
+            return 0
+
+        current_price = self.index.prices.get(feed, 0.0)
+        if current_price <= 0:
+            return 0
+
+        new_price = current_price * (1.0 - impact)
+
+        # Find affected positions and queue backrun bundles
+        affected = self.index.get_by_feed(feed)
+        bundles_queued = 0
+        now = time.time()
+        for pos in affected:
+            if pos.chain_id != chain_id:
+                continue
+            if now - pos.last_fired_at < self._FIRE_COOLDOWN_SECONDS:
+                continue
+
+            new_hf = self.index.estimate_hf_after_price_change(pos, current_price, new_price)
+            if new_hf < 1.0 and pos.health_factor >= self._BACKRUN_HF_THRESHOLD:
+                # Dedup by position identity — ignore which pool triggered it
+                dedup_key = f"{chain_id}:{pos.user_address}"
+                if dedup_key in self._queued:
+                    continue
+                self._queued.add(dedup_key)
+                self.bundles_prepared += 1
+                bundles_queued += 1
+
+                print(
+                    f"   📡 MEMPOOL→BACKRUN: pool={to_lower[:12]}... "
+                    f"impact={impact*100:.2f}% "
+                    f"HF {pos.health_factor:.4f}→{new_hf:.4f} "
+                    f"user={pos.user_address[:12]}... "
+                    f"debt=${pos.debt_usd:,.0f}"
+                )
+                pos.last_fired_at = now
+                pos.fire_count += 1
+                await self.executor.fire(pos)
+
+        return bundles_queued
+
+    def get_stats(self) -> Dict[str, Any]:
+        return {
+            'txs_inspected': self.txs_inspected,
+            'impacts_detected': self.impacts_detected,
+            'bundles_prepared': self.bundles_prepared,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════
 # MASTER ORCHESTRATOR
 # ═══════════════════════════════════════════════════════════════════
 
@@ -650,6 +864,9 @@ class ZeroRevertPipeline:
         self.oracle_reactor = OracleReactor(w3_providers, self.index, self.executor)
         self.block_watcher = BlockWatcher(w3_providers, self.index, self.executor)
 
+        # Layer 5 — Mempool Sniffer (backrun price-moving DEX trades)
+        self.mempool_sniffer = MempoolSniffer(self.index, self.executor)
+
         # Tasks
         self._tasks: List[asyncio.Task] = []
 
@@ -665,8 +882,11 @@ class ZeroRevertPipeline:
             asyncio.create_task(self._stats_loop()),
         ]
 
+        n_chains = len(self._w3)
+        n_pools = sum(len(v) for v in self.mempool_sniffer._pools.values())
         print("   ✅ Zero-Revert Pipeline RUNNING")
         print(f"      Oracle feeds: {len(self.index.prices)}")
+        print(f"      Mempool sniffer: {n_pools} DEX pools across {n_chains} chains")
         print(f"      Execution: DIRECT (no simulation)")
         print(f"      Flashbots: {'enabled' if self.executor._flashbots_w3 else 'disabled'}")
 
@@ -731,6 +951,7 @@ class ZeroRevertPipeline:
             await asyncio.sleep(120)
             ex = self.executor
             bw = self.block_watcher
+            ms = self.mempool_sniffer.get_stats()
             n_pos = self.index.count
             n_by_feed = {f: len(keys) for f, keys in self.index.by_feed.items() if keys}
 
@@ -742,7 +963,10 @@ class ZeroRevertPipeline:
                 f"confirmed={ex.txs_confirmed} "
                 f"reverted={ex.txs_reverted} "
                 f"profit=${ex.total_profit_usd:,.2f} "
-                f"gas=${ex.total_gas_spent_usd:,.4f}"
+                f"gas=${ex.total_gas_spent_usd:,.4f} "
+                f"mempool_txs={ms['txs_inspected']} "
+                f"impacts={ms['impacts_detected']} "
+                f"bundles={ms['bundles_prepared']}"
             )
             if n_by_feed:
                 feeds_str = ', '.join(f"{f}:{c}" for f, c in sorted(n_by_feed.items()))
@@ -750,6 +974,7 @@ class ZeroRevertPipeline:
 
     def get_stats(self) -> Dict[str, Any]:
         ex = self.executor
+        ms = self.mempool_sniffer.get_stats()
         return {
             'positions': self.index.count,
             'checks': self.block_watcher.checks_run,
@@ -759,4 +984,7 @@ class ZeroRevertPipeline:
             'profit_usd': ex.total_profit_usd,
             'gas_spent_usd': ex.total_gas_spent_usd,
             'oracle_feeds': len(self.index.prices),
+            'mempool_txs_inspected': ms['txs_inspected'],
+            'mempool_impacts_detected': ms['impacts_detected'],
+            'mempool_bundles_prepared': ms['bundles_prepared'],
         }

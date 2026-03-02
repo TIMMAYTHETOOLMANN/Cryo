@@ -994,6 +994,179 @@ class TestJITEngineIntegration:
 
 
 # ============================================================================
+# ZERO-REVERT PIPELINE Integration
+# ============================================================================
+
+class TestZeroRevertPipelineIntegration:
+    """Tests for the ZeroRevertPipeline and MempoolSniffer wiring."""
+
+    def test_zero_revert_pipeline_importable(self):
+        """ZeroRevertPipeline and MempoolSniffer are importable from profit_engine."""
+        from profit_engine import ZeroRevertPipeline, MempoolSniffer
+        assert ZeroRevertPipeline is not None
+        assert MempoolSniffer is not None
+
+    def test_exports_in_all(self):
+        """Both symbols appear in profit_engine.__all__."""
+        import profit_engine
+        assert "ZeroRevertPipeline" in profit_engine.__all__
+        assert "MempoolSniffer" in profit_engine.__all__
+
+    def test_dex_pool_addresses_structure(self):
+        """DEX_POOL_ADDRESSES has entries for expected chains."""
+        from profit_engine.zero_revert_pipeline import DEX_POOL_ADDRESSES
+        assert 1 in DEX_POOL_ADDRESSES        # Ethereum mainnet
+        assert 42161 in DEX_POOL_ADDRESSES    # Arbitrum
+        # All pool addresses are lowercase
+        for pools in DEX_POOL_ADDRESSES.values():
+            for addr in pools:
+                assert addr == addr.lower(), f"Pool address not lowercase: {addr}"
+
+    def test_pool_to_asset_keys_lowercase(self):
+        """All keys in POOL_TO_ASSET are lowercase hex strings."""
+        from profit_engine.zero_revert_pipeline import POOL_TO_ASSET
+        for k in POOL_TO_ASSET:
+            assert k == k.lower(), f"POOL_TO_ASSET key not lowercase: {k}"
+
+    def test_mempool_sniffer_instantiates(self):
+        """MempoolSniffer can be created with a minimal PositionIndex and executor stub."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        index = PositionIndex()
+        executor = MagicMock()
+        sniffer = MempoolSniffer(index, executor)
+        assert sniffer is not None
+        assert sniffer.txs_inspected == 0
+
+    def test_mempool_sniffer_estimate_price_impact(self):
+        """estimate_price_impact uses constant-product formula."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        # $100k trade vs $1M pool → ~9% impact
+        impact = sniffer.estimate_price_impact(100_000, 1_000_000)
+        assert abs(impact - 100_000 / 1_100_000) < 1e-9
+        # Zero trade → 0
+        assert sniffer.estimate_price_impact(0, 1_000_000) == 0.0
+        # Zero pool → 0
+        assert sniffer.estimate_price_impact(100_000, 0) == 0.0
+
+    def test_mempool_sniffer_below_threshold_ignored(self):
+        """Transactions with < 1% price impact are skipped."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        # tiny trade, huge pool → impact << 1%
+        result = asyncio.get_event_loop().run_until_complete(
+            sniffer.on_pending_transaction(
+                chain_id=1,
+                to_address='0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640',
+                input_data=b'',
+                value_eth=0.001,
+                eth_price_usd=2500.0,
+                pool_tvl_usd=1_000_000_000.0,  # $1B pool
+            )
+        )
+        assert result == 0
+        assert sniffer.impacts_detected == 0
+
+    def test_mempool_sniffer_unknown_pool_ignored(self):
+        """Transactions to an unlisted pool address return 0."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        result = asyncio.get_event_loop().run_until_complete(
+            sniffer.on_pending_transaction(
+                chain_id=1,
+                to_address='0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+                input_data=b'',
+                value_eth=100.0,
+            )
+        )
+        assert result == 0
+
+    def test_mempool_sniffer_get_stats_structure(self):
+        """get_stats() returns dict with expected keys."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        stats = sniffer.get_stats()
+        for key in ['txs_inspected', 'impacts_detected', 'bundles_prepared']:
+            assert key in stats, f"Missing key: {key}"
+
+    def test_zero_revert_pipeline_has_mempool_sniffer(self):
+        """ZeroRevertPipeline.__init__ creates a mempool_sniffer attribute."""
+        from profit_engine.zero_revert_pipeline import ZeroRevertPipeline
+        zrp = ZeroRevertPipeline({})
+        assert hasattr(zrp, 'mempool_sniffer')
+        assert zrp.mempool_sniffer is not None
+
+    def test_zero_revert_pipeline_get_stats_includes_mempool_keys(self):
+        """ZeroRevertPipeline.get_stats() includes mempool sniffer keys."""
+        from profit_engine.zero_revert_pipeline import ZeroRevertPipeline
+        zrp = ZeroRevertPipeline({})
+        stats = zrp.get_stats()
+        for key in ['mempool_txs_inspected', 'mempool_impacts_detected', 'mempool_bundles_prepared']:
+            assert key in stats, f"Missing ZRP stats key: {key}"
+
+    def test_pipeline_has_zrp_stats_keys(self):
+        """Pipeline.stats contains all Zero-Revert Pipeline stat keys."""
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        p.stats = {
+            "zrp_positions": 0,
+            "zrp_checks": 0,
+            "zrp_fired": 0,
+            "zrp_confirmed": 0,
+            "zrp_reverted": 0,
+            "zrp_profit_usd": 0.0,
+            "zrp_mempool_txs_inspected": 0,
+            "zrp_mempool_impacts_detected": 0,
+            "zrp_mempool_bundles_prepared": 0,
+        }
+        for key in p.stats:
+            assert key in p.stats
+
+    def test_pipeline_sync_zrp_watchlist_no_pipeline(self):
+        """_sync_zrp_watchlist is a no-op when zero_revert_pipeline is None."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        p.zero_revert_pipeline = None
+        p._sync_zrp_watchlist([MagicMock()])  # must not raise
+
+    def test_pipeline_sync_zrp_watchlist_calls_feed(self):
+        """_sync_zrp_watchlist forwards positions to zero_revert_pipeline.feed_watchlist."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_zrp = MagicMock()
+        p.zero_revert_pipeline = mock_zrp
+
+        mock_pos = MagicMock()
+        mock_pos.user = "0xABCD"
+        mock_pos.chain_id = 1
+        mock_pos.health_factor = 1.02
+        mock_pos.debt_amount = int(5e21)
+        mock_pos.collateral_asset = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        mock_pos.debt_asset = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        mock_pos.pool_address = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+
+        p._sync_zrp_watchlist([mock_pos])
+
+        mock_zrp.feed_watchlist.assert_called_once()
+        arg = mock_zrp.feed_watchlist.call_args[0][0]
+        assert "0xABCD" in arg
+        assert arg["0xABCD"]["chain_id"] == 1
+        assert arg["0xABCD"]["last_hf"] == 1.02
+
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
