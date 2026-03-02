@@ -16,6 +16,7 @@ Providers (sorted cheapest to most expensive):
 
 Zero capital required — flash loans are repaid in the same transaction.
 """
+from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
@@ -319,6 +320,48 @@ class FlashLoanAggregator:
         available = [q for q in self.all_quotes(asset, amount, eth_price_usd) if q.available]
         return available[0] if available else None
 
+    def best_quote_adaptive(
+        self,
+        asset: str,
+        amount: int,
+        eth_price_usd: float = 2500.0,
+        success_weight: float = 0.3,
+        registry: Optional[ProviderRegistry] = None,
+    ) -> Optional[FlashLoanQuote]:
+        """Adaptive provider selection balancing fee cost AND historical success rate.
+
+        Score = (1 - success_weight) * normalised_fee  +  success_weight * (1 - success_rate)
+
+        A lower score is better (lower fee, higher success rate).  Providers
+        with fewer than ``ProviderRegistry.MIN_ATTEMPTS_FOR_SCORING`` attempts
+        receive an optimistic success-rate prior of 1.0 so they are not
+        unfairly penalised before real data is collected.
+
+        Args:
+            asset:          Debt token address.
+            amount:         Borrow amount in token's native decimals.
+            eth_price_usd:  ETH price for USD conversion.
+            success_weight: Weight given to historical success-rate vs. fee (0–1).
+            registry:       Optional external registry; falls back to the global one.
+
+        Returns:
+            The best-scoring available :class:`FlashLoanQuote`, or ``None``.
+        """
+        reg = registry or _provider_registry
+        available = [q for q in self.all_quotes(asset, amount, eth_price_usd) if q.available]
+        if not available:
+            return None
+        if len(available) == 1:
+            return available[0]
+
+        max_fee = max((q.fee_wei for q in available), default=0) or 1
+        def _score(q: FlashLoanQuote) -> float:
+            norm_fee = q.fee_wei / max_fee
+            failure_risk = 1.0 - reg.success_rate(q.provider)
+            return (1.0 - success_weight) * norm_fee + success_weight * failure_risk
+
+        return min(available, key=_score)
+
     def quote_for(
         self,
         provider: FlashLoanProviderType,
@@ -345,6 +388,94 @@ class FlashLoanAggregator:
 
 
 # ============================================================================
+# PROVIDER REGISTRY — Adaptive Provider Router (Module 3 Enhancement #1)
+# ============================================================================
+
+class ProviderRegistry:
+    """
+    Tracks historical success rates and liquidity for each flash loan provider.
+
+    The registry stores per-provider stats that the aggregator uses to rank
+    candidates beyond pure fee cost:
+      - ``attempts``      Total flash loan attempts.
+      - ``successes``     Successful completions.
+      - ``avg_latency_ms`` Rolling average execution latency.
+      - ``max_liquidity``  Largest amount successfully borrowed (watermark).
+      - ``success_rate``   Computed as successes / max(attempts, 1).
+
+    The adaptive selection function combines fee cost and success rate via a
+    configurable ``success_weight`` so that a slightly cheaper but unreliable
+    provider does not win over a reliable one.
+    """
+
+    # Minimum attempts required before the success rate influences ranking.
+    MIN_ATTEMPTS_FOR_SCORING = 5
+
+    def __init__(self) -> None:
+        self._stats: Dict[FlashLoanProviderType, Dict] = {
+            pt: {
+                "attempts": 0,
+                "successes": 0,
+                "avg_latency_ms": 0.0,
+                "max_liquidity": 0,
+            }
+            for pt in FlashLoanProviderType
+        }
+
+    def record_result(
+        self,
+        provider: FlashLoanProviderType,
+        success: bool,
+        amount: int = 0,
+        latency_ms: float = 0.0,
+    ) -> None:
+        """Update stats after an execution attempt."""
+        s = self._stats[provider]
+        s["attempts"] += 1
+        if success:
+            s["successes"] += 1
+            if amount > s["max_liquidity"]:
+                s["max_liquidity"] = amount
+        # Exponential moving average for latency.
+        alpha = 0.3
+        if s["avg_latency_ms"] == 0.0:
+            s["avg_latency_ms"] = latency_ms
+        else:
+            s["avg_latency_ms"] = (1 - alpha) * s["avg_latency_ms"] + alpha * latency_ms
+
+    def success_rate(self, provider: FlashLoanProviderType) -> float:
+        """Return historical success rate (0.0–1.0); defaults to 1.0 until data exists."""
+        s = self._stats[provider]
+        if s["attempts"] < self.MIN_ATTEMPTS_FOR_SCORING:
+            return 1.0  # Optimistic prior for new / rarely-used providers
+        return s["successes"] / s["attempts"]
+
+    def get_stats(self, provider: FlashLoanProviderType) -> Dict:
+        """Return a snapshot of stats for the given provider."""
+        s = self._stats[provider]
+        return {
+            **s,
+            "success_rate": self.success_rate(provider),
+        }
+
+    def all_stats(self) -> Dict[str, Dict]:
+        """Return stats for all providers keyed by provider name."""
+        return {
+            pt.value: self.get_stats(pt)
+            for pt in FlashLoanProviderType
+        }
+
+
+# Module-level singleton registry (shared across all aggregator instances).
+_provider_registry = ProviderRegistry()
+
+
+def get_provider_registry() -> ProviderRegistry:
+    """Return the global ProviderRegistry singleton."""
+    return _provider_registry
+
+
+# ============================================================================
 # SINGLETON
 # ============================================================================
 
@@ -363,6 +494,8 @@ __all__ = [
     "FlashLoanQuote",
     "FlashLoanExecutionResult",
     "FlashLoanAggregator",
+    "ProviderRegistry",
+    "get_provider_registry",
     "AaveV3FlashLoanProvider",
     "AaveV2FlashLoanProvider",
     "BalancerV2FlashLoanProvider",
