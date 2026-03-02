@@ -27,6 +27,7 @@ class CompetitionData:
     signal_id: str
     estimated_competitors: int
     competition_level: str  # low, medium, high
+    competition_score: float  # 0-1, higher = more competition (0 = no competition)
     visibility_score: float  # 0-1, how visible is this opportunity
     gas_competition_factor: float  # Multiplier for gas wars
     success_probability: float  # Chance of winning against competition
@@ -55,7 +56,7 @@ class CompetitionEstimator:
             SignalType.LIQUIDATION: 0.7,  # High competition
             SignalType.ARBITRAGE: 0.6,
             SignalType.SANDWICH: 0.8,  # Very high competition
-            SignalType.BACK_RUN: 0.5,
+            SignalType.BACKRUN: 0.5,
             SignalType.FRONT_RUN: 0.6,
             SignalType.CROSS_CHAIN_ARB: 0.3,  # Lower competition (harder)
             SignalType.ORACLE_UPDATE: 0.4,
@@ -122,12 +123,16 @@ class CompetitionEstimator:
         # Calculate recommended gas multiplier
         gas_multiplier = self._calculate_gas_multiplier(level, estimated_count)
 
+        # Compute numeric competition score (0=no competition, 1=max competition)
+        competition_score = round(min(1.0, base_competition * visibility * gas_factor * time_factor), 4)
+
         self.estimations_made += 1
 
         return CompetitionData(
             signal_id=signal_id,
             estimated_competitors=estimated_count,
             competition_level=level.value,
+            competition_score=competition_score,
             visibility_score=round(visibility, 4),
             gas_competition_factor=round(gas_factor, 4),
             success_probability=round(success_prob, 4),
@@ -214,7 +219,7 @@ class CompetitionEstimator:
             SignalType.LIQUIDATION: 0.9,  # Skill-based
             SignalType.ARBITRAGE: 0.8,
             SignalType.SANDWICH: 0.7,  # Very competitive
-            SignalType.BACK_RUN: 0.85,
+            SignalType.BACKRUN: 0.85,
             SignalType.CROSS_CHAIN_ARB: 0.6,  # Complex, fewer winners
         }
 

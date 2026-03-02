@@ -64,7 +64,7 @@ class DynamicRouter:
                 SignalType.CROSS_CHAIN_ARB,
             ],
             ExecutionModule.BACKRUN_BOT: [
-                SignalType.BACK_RUN,
+                SignalType.BACKRUN,
                 SignalType.LARGE_SWAP,
             ],
             ExecutionModule.SANDWICH_BOT: [
@@ -164,10 +164,16 @@ class DynamicRouter:
         signal = scored.signal
 
         if scored.tier == ScoreTier.EXCELLENT:
-            # High priority → Liquidation Engine
-            module = ExecutionModule.LIQUIDATION_ENGINE
-            reason = f"Excellent score ({scored.quality_score:.2f})"
-            priority = 10
+            # Route by signal type even for excellent scores so arbitrage
+            # signals are not incorrectly sent to the liquidation engine.
+            if signal.signal_type in [SignalType.ARBITRAGE, SignalType.CROSS_CHAIN_ARB]:
+                module = ExecutionModule.ARBITRAGE_MODULE
+                reason = f"Excellent score ({scored.quality_score:.2f}), arbitrage type"
+                priority = 10
+            else:
+                module = ExecutionModule.LIQUIDATION_ENGINE
+                reason = f"Excellent score ({scored.quality_score:.2f})"
+                priority = 10
         elif scored.tier == ScoreTier.GOOD:
             # Medium priority → Arbitrage or Backrun
             if signal.signal_type in [SignalType.ARBITRAGE, SignalType.CROSS_CHAIN_ARB]:
@@ -204,7 +210,7 @@ class DynamicRouter:
             SignalType.LIQUIDATION: ExecutionModule.LIQUIDATION_ENGINE,
             SignalType.ARBITRAGE: ExecutionModule.ARBITRAGE_MODULE,
             SignalType.SANDWICH: ExecutionModule.SANDWICH_BOT,
-            SignalType.BACK_RUN: ExecutionModule.BACKRUN_BOT,
+            SignalType.BACKRUN: ExecutionModule.BACKRUN_BOT,
             SignalType.FRONT_RUN: ExecutionModule.SANDWICH_BOT,
             SignalType.CROSS_CHAIN_ARB: ExecutionModule.CROSS_CHAIN_EXECUTOR,
             SignalType.ORACLE_UPDATE: ExecutionModule.LIQUIDATION_ENGINE,

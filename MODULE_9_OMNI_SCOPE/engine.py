@@ -61,14 +61,18 @@ class OmniScopeEngine:
     Provides consume() API for MODULE_1 pipeline integration.
     """
 
-    def __init__(self, config: Optional[OmniScopeConfig] = None):
+    def __init__(self, config: Optional[OmniScopeConfig] = None, rpc_gateway=None):
         self.config = config or get_omni_config()
 
         # Central data bus
         self.bus = DataBus()
 
+        # Module 10: Intelligent RPC Gateway — optional, enables managed rate
+        # limiting, circuit breaking, and endpoint failover for all arrays.
+        self.rpc_gateway = rpc_gateway
+
         # 5 Detector Arrays
-        self.mempool_radar = MempoolRadar(self.bus, self.config)
+        self.mempool_radar = MempoolRadar(self.bus, self.config, rpc_gateway=rpc_gateway)
         self.contract_crawler = ContractCrawler(self.bus, self.config)
         self.static_analyzer = StaticAnalyzer(self.bus, self.config)
         self.bridge_monitor = BridgeMonitor(self.bus, self.config)
@@ -178,8 +182,9 @@ class OmniScopeEngine:
         """Get comprehensive stats from all subsystems."""
         uptime = time.time() - self._start_time if self._start_time else 0
 
-        return {
+        stats = {
             "uptime_hours": uptime / 3600,
+            "rpc_gateway_active": self.rpc_gateway is not None,
             "data_bus": self.bus.get_stats(),
             "array_1_mempool": self.mempool_radar.get_stats(),
             "array_2_crawler": self.contract_crawler.get_stats(),
@@ -190,6 +195,13 @@ class OmniScopeEngine:
             "alpha_seeker": self.alpha_seeker.get_stats(),
             "bootstrap": self.bootstrap.get_stats(),
         }
+        if self.rpc_gateway is not None:
+            try:
+                stats["rpc_gateway"] = self.rpc_gateway.get_stats()
+            except Exception as exc:
+                logger.warning("RPCGateway.get_stats() failed: %s", exc)
+                stats["rpc_gateway"] = {"error": str(exc)}
+        return stats
 
     def print_status(self):
         """Print comprehensive status report."""

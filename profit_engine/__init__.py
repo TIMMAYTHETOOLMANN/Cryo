@@ -21,7 +21,8 @@ from .flash_loan_router import FlashLoanRouter, FlashLoanProvider
 from .gas_optimizer import GasOptimizer, GasEstimate
 from .profit_ledger import ProfitLedger, ProfitEntry, PhaseState
 from .rpc_gateway import RPCGateway, RequestPriority, build_default_gateway
-from .zero_revert_pipeline import ZeroRevertPipeline
+from .zero_revert_pipeline import ZeroRevertPipeline, MempoolSniffer
+from .jit_liquidation_engine import JITLiquidationEngine, WatchedPosition
 
 __all__ = [
     'TriangulatedProfitEngine',
@@ -32,5 +33,6 @@ __all__ = [
     'GasOptimizer', 'GasEstimate',
     'ProfitLedger', 'ProfitEntry', 'PhaseState',
     'RPCGateway', 'RequestPriority', 'build_default_gateway',
-    'ZeroRevertPipeline',
+    'ZeroRevertPipeline', 'MempoolSniffer',
+    'JITLiquidationEngine', 'WatchedPosition',
 ]

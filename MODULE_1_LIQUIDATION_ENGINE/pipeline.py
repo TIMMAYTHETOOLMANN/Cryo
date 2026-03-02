@@ -2,7 +2,8 @@
 """
 MODULE 1 — Enhanced Master Pipeline (Script 4 Upgraded)
 =========================================================
-Fully wired with Scripts 1-3 + Module 9 Omni-Scope Triangulation Engine.
+Fully wired with Scripts 1-3 + Module 9 Omni-Scope Triangulation Engine
++ Module 11 JIT Liquidation Timing Optimizer.
 
 $0 Initial Capital → Exponential Profit:
   Stage 0  Pre-Flight       │ Validate system (zero capital)
@@ -15,12 +16,15 @@ $0 Initial Capital → Exponential Profit:
   Stage 6  Profit Collection │ Treasury monitoring
   Stage 7  Analytics         │ A/B testing + RL parameter tuning + anomaly detection
   Module 9 Omni-Scope        │ 5 detector arrays + ML ranker (predictive intel)
+  Module 11 JIT Engine       │ Oracle-triggered, simulate-before-send, JIT execution
 """
 
 import asyncio
 import logging
 import time
 from typing import Dict, List, Optional
+
+from web3 import Web3
 
 from .config.settings import ConfigManager, get_config
 from .stage_0_preflight.system_validator import SystemValidator, PreFlightReport
@@ -57,7 +61,26 @@ except ImportError:
     OmniScopeEngine = None  # type: ignore
     OMNI_SCOPE_AVAILABLE = False
 
+# Module 11 — JIT Liquidation Timing Optimizer
+try:
+    from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+    JIT_ENGINE_AVAILABLE = True
+except ImportError:
+    JITLiquidationEngine = None  # type: ignore
+    JIT_ENGINE_AVAILABLE = False
+
+# Zero-Revert Execution Pipeline (oracle reactor + block watcher + mempool sniffer)
+try:
+    from profit_engine.zero_revert_pipeline import ZeroRevertPipeline
+    ZRP_AVAILABLE = True
+except ImportError:
+    ZeroRevertPipeline = None  # type: ignore
+    ZRP_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+# Chain IDs supported by the JIT engine for Web3 provider construction.
+_JIT_CHAIN_IDS = [1, 42161, 10, 8453, 137, 43114, 56, 324]
 
 
 class Pipeline:
@@ -110,6 +133,22 @@ class Pipeline:
         if OMNI_SCOPE_AVAILABLE:
             self.omni_scope = OmniScopeEngine()
 
+        # Module 11: JIT Liquidation Timing Optimizer
+        self.jit_engine: Optional["JITLiquidationEngine"] = None
+        if JIT_ENGINE_AVAILABLE:
+            try:
+                self.jit_engine = JITLiquidationEngine(self._build_w3_providers())
+            except Exception as _jit_err:
+                logger.warning(f"JITLiquidationEngine init failed (stub mode): {_jit_err}")
+
+        # Zero-Revert Execution Pipeline (oracle + block + mempool sniffer)
+        self.zero_revert_pipeline: Optional["ZeroRevertPipeline"] = None
+        if ZRP_AVAILABLE:
+            try:
+                self.zero_revert_pipeline = ZeroRevertPipeline(self._build_w3_providers())
+            except Exception as _zrp_err:
+                logger.warning(f"ZeroRevertPipeline init failed (stub mode): {_zrp_err}")
+
         # State
         self._preflight: Optional[PreFlightReport] = None
         self._gas_report: Optional[GasReport] = None
@@ -142,7 +181,95 @@ class Pipeline:
             "risk_rejections": 0,
             "twap_rejections": 0,
             "rl_episodes": 0,
+            # Module 11: JIT execution stats
+            "jit_positions_tracked": 0,
+            "jit_simulations_run": 0,
+            "jit_simulations_passed": 0,
+            "jit_txs_broadcast": 0,
+            "jit_txs_confirmed": 0,
+            "jit_txs_reverted": 0,
+            "jit_profit_usd": 0.0,
+            # Zero-Revert Pipeline stats
+            "zrp_positions": 0,
+            "zrp_checks": 0,
+            "zrp_fired": 0,
+            "zrp_confirmed": 0,
+            "zrp_reverted": 0,
+            "zrp_profit_usd": 0.0,
+            "zrp_mempool_txs_inspected": 0,
+            "zrp_mempool_impacts_detected": 0,
+            "zrp_mempool_bundles_prepared": 0,
         }
+
+    # ------------------------------------------------------------------
+    # Module 11 helpers
+    # ------------------------------------------------------------------
+
+    def _build_w3_providers(self) -> Dict[int, Web3]:
+        """Build Web3 instances from configured RPC URLs for all known chains."""
+        providers: Dict[int, Web3] = {}
+        for chain_id in _JIT_CHAIN_IDS:
+            chain_cfg = self.config.get_chain(chain_id)
+            if chain_cfg and chain_cfg.rpc_url:
+                try:
+                    providers[chain_id] = Web3(
+                        Web3.HTTPProvider(chain_cfg.rpc_url, request_kwargs={"timeout": 10})
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to create Web3 provider for chain %d: %s", chain_id, exc)
+        return providers
+
+    def _sync_jit_watchlist(self, positions: List[LiquidatablePosition]) -> None:
+        """Feed detected positions into the JIT engine watchlist.
+
+        Positions are sorted by health factor (ascending) and capped at
+        ``max_watchlist_size`` so only the most at-risk candidates are actively
+        monitored.  This avoids RPC flooding while maximising liquidation coverage.
+
+        Note: ``debt_usd`` is estimated as ``debt_amount_wei / 1e18 * 2500`` — a
+        placeholder using a rough ETH price.  The JIT engine uses this value only
+        for initial profit-proximity scoring; it re-fetches actual prices via
+        on-chain oracles during active monitoring.
+        """
+        if not self.jit_engine:
+            return
+        max_size = self.config.execution.max_watchlist_size
+        candidates = sorted(positions, key=lambda p: p.health_factor)[:max_size]
+        watchlist = {
+            pos.user: {
+                "chain_id": pos.chain_id,
+                "last_hf": pos.health_factor,
+                "debt_usd": pos.debt_amount / 1e18 * 2500,  # rough ETH price estimate
+                "collateral_asset": pos.collateral_asset,
+                "debt_asset": pos.debt_asset,
+                "pool": getattr(pos, "pool_address", ""),
+            }
+            for pos in candidates
+        }
+        self.jit_engine.feed_watchlist(watchlist)
+
+    def _sync_zrp_watchlist(self, positions: List[LiquidatablePosition]) -> None:
+        """Feed detected positions into the Zero-Revert Pipeline's position index.
+
+        Like ``_sync_jit_watchlist``, caps at ``max_watchlist_size`` positions
+        ranked by lowest health factor first.
+        """
+        if not self.zero_revert_pipeline:
+            return
+        max_size = self.config.execution.max_watchlist_size
+        candidates = sorted(positions, key=lambda p: p.health_factor)[:max_size]
+        watchlist = {
+            pos.user: {
+                "chain_id": pos.chain_id,
+                "last_hf": pos.health_factor,
+                "debt_usd": pos.debt_amount / 1e18 * 2500,  # rough ETH price estimate
+                "collateral_asset": pos.collateral_asset,
+                "debt_asset": pos.debt_asset,
+                "pool": getattr(pos, "pool_address", ""),
+            }
+            for pos in candidates
+        }
+        self.zero_revert_pipeline.feed_watchlist(watchlist)
 
     # ------------------------------------------------------------------
     # Entry points
@@ -216,6 +343,22 @@ class Pipeline:
         else:
             logger.info("\n▸ MODULE 9: Omni-Scope not available (install MODULE_9_OMNI_SCOPE)")
 
+        # ── MODULE 11: JIT Liquidation Timing Optimizer ──
+        if self.jit_engine:
+            logger.info("\n▸ MODULE 11: Starting JIT Liquidation Timing Optimizer…")
+            await self.jit_engine.start()
+            logger.info("  ✅ Oracle watcher + simulate-before-send + JIT executor active")
+        else:
+            logger.info("\n▸ MODULE 11: JIT engine not available")
+
+        # ── ZERO-REVERT PIPELINE: Oracle + Block + Mempool Sniffer ──
+        if self.zero_revert_pipeline:
+            logger.info("\n▸ ZERO-REVERT PIPELINE: Starting oracle reactor + mempool sniffer…")
+            await self.zero_revert_pipeline.start()
+            logger.info("  ✅ Oracle reactor + block watcher + mempool backrun sniffer active")
+        else:
+            logger.info("\n▸ ZERO-REVERT PIPELINE: not available")
+
         # ── MAIN LOOP ──
         logger.info("\n" + "─" * 80)
         logger.info("  ENTERING MAIN LOOP (Script 4 Enhanced Pipeline)")
@@ -280,6 +423,12 @@ class Pipeline:
             return
 
         self.stats["opportunities_found"] += len(opportunities)
+
+        # ── MODULE 11: Feed watchlist into JIT Timing Optimizer ──
+        self._sync_jit_watchlist(opportunities)
+
+        # ── ZERO-REVERT PIPELINE: Feed position index for oracle/mempool tracking ──
+        self._sync_zrp_watchlist(opportunities)
 
         # ── STAGE 2: Analysis (multi-exit + surplus + RL-tuned) ──
         profitable = await self._stage_2_analyse(opportunities)
@@ -717,9 +866,35 @@ class Pipeline:
         if self.omni_scope:
             await self.omni_scope.stop()
 
+        # Stop Module 11 JIT engine
+        if self.jit_engine:
+            await self.jit_engine.stop()
+            jit_stats = self.jit_engine.get_stats()
+            self.stats["jit_positions_tracked"] = jit_stats.get("jit_positions", 0)
+            self.stats["jit_simulations_run"] = jit_stats.get("simulations_run", 0)
+            self.stats["jit_simulations_passed"] = jit_stats.get("simulations_passed", 0)
+            self.stats["jit_txs_broadcast"] = jit_stats.get("txs_broadcast", 0)
+            self.stats["jit_txs_confirmed"] = jit_stats.get("txs_confirmed", 0)
+            self.stats["jit_txs_reverted"] = jit_stats.get("txs_reverted", 0)
+            self.stats["jit_profit_usd"] = jit_stats.get("total_profit_usd", 0.0)
+
+        # Stop Zero-Revert Pipeline
+        if self.zero_revert_pipeline:
+            await self.zero_revert_pipeline.stop()
+            zrp_stats = self.zero_revert_pipeline.get_stats()
+            self.stats["zrp_positions"] = zrp_stats.get("positions", 0)
+            self.stats["zrp_checks"] = zrp_stats.get("checks", 0)
+            self.stats["zrp_fired"] = zrp_stats.get("fired", 0)
+            self.stats["zrp_confirmed"] = zrp_stats.get("confirmed", 0)
+            self.stats["zrp_reverted"] = zrp_stats.get("reverted", 0)
+            self.stats["zrp_profit_usd"] = zrp_stats.get("profit_usd", 0.0)
+            self.stats["zrp_mempool_txs_inspected"] = zrp_stats.get("mempool_txs_inspected", 0)
+            self.stats["zrp_mempool_impacts_detected"] = zrp_stats.get("mempool_impacts_detected", 0)
+            self.stats["zrp_mempool_bundles_prepared"] = zrp_stats.get("mempool_bundles_prepared", 0)
+
         uptime = time.time() - self.stats["start_time"]
         logger.info("\n" + "=" * 80)
-        logger.info("  PIPELINE SHUTDOWN — FINAL REPORT (Script 4 + Omni-Scope)")
+        logger.info("  PIPELINE SHUTDOWN — FINAL REPORT (Script 4 + Omni-Scope + JIT + ZRP)")
         logger.info("=" * 80)
         logger.info(f"  Uptime:                  {uptime/3600:.2f} hours")
         logger.info(f"  Mode:                    {self._mode}")
@@ -762,6 +937,30 @@ class Pipeline:
         if self.omni_scope:
             logger.info(f"\n  ─── Module 9: Omni-Scope ───")
             self.omni_scope.print_status()
+
+        # Module 11 JIT stats
+        if self.jit_engine:
+            logger.info(f"\n  ─── Module 11: JIT Timing Optimizer ───")
+            logger.info(f"  JIT positions tracked:   {self.stats['jit_positions_tracked']}")
+            logger.info(f"  Simulations run:         {self.stats['jit_simulations_run']}")
+            logger.info(f"  Simulations passed:      {self.stats['jit_simulations_passed']}")
+            logger.info(f"  TXs broadcast:           {self.stats['jit_txs_broadcast']}")
+            logger.info(f"  TXs confirmed:           {self.stats['jit_txs_confirmed']}")
+            logger.info(f"  TXs reverted:            {self.stats['jit_txs_reverted']}")
+            logger.info(f"  JIT profit:              ${self.stats['jit_profit_usd']:.2f}")
+
+        # Zero-Revert Pipeline stats
+        if self.zero_revert_pipeline:
+            logger.info(f"\n  ─── Zero-Revert Pipeline ───")
+            logger.info(f"  ZRP positions indexed:   {self.stats['zrp_positions']}")
+            logger.info(f"  On-chain checks:         {self.stats['zrp_checks']}")
+            logger.info(f"  TXs fired:               {self.stats['zrp_fired']}")
+            logger.info(f"  TXs confirmed:           {self.stats['zrp_confirmed']}")
+            logger.info(f"  TXs reverted:            {self.stats['zrp_reverted']}")
+            logger.info(f"  ZRP profit:              ${self.stats['zrp_profit_usd']:.2f}")
+            logger.info(f"  Mempool txs inspected:   {self.stats['zrp_mempool_txs_inspected']}")
+            logger.info(f"  Price impacts detected:  {self.stats['zrp_mempool_impacts_detected']}")
+            logger.info(f"  Backrun bundles queued:  {self.stats['zrp_mempool_bundles_prepared']}")
 
         # Analytics summary
         logger.info("\n  ─── Analytics ───")

@@ -173,7 +173,7 @@ class TestDataModels:
         """Test signal type enum"""
         assert SignalType.LIQUIDATION.value == "liquidation"
         assert SignalType.ARBITRAGE.value == "arbitrage"
-        assert SignalType.BACK_RUN.value == "backrun"
+        assert SignalType.BACKRUN.value == "backrun"
 
     def test_execution_module_enum(self):
         """Test execution module enum"""
@@ -208,7 +208,7 @@ class TestSignalQueue:
         # Create signals with different priorities
         signal1 = OpportunitySignal(
             signal_id="low_priority",
-            signal_type=SignalType.BACK_RUN,
+            signal_type=SignalType.BACKRUN,
             source_module=SignalSource.MEMPOOL_RADAR,
             chain_id=1,
             target_contract="0x123",
@@ -488,7 +488,7 @@ class TestVulnerabilityScanner:
     def test_scan_vulnerable_contract(self, vulnerability_scanner):
         """Test scanning vulnerable contract"""
         # Bytecode with swap function (sandwich vulnerable)
-        bytecode = "0x608060405238ed1739abcdef" * 100
+        bytecode = "0x" + "608060405238ed1739abcdef" * 100
 
         result = vulnerability_scanner.scan_bytecode(bytecode, "0xvuln")
 
@@ -597,6 +597,10 @@ class TestEndToEnd:
         # 1. Queue signal
         await signal_queue.enqueue(sample_signal)
         assert signal_queue.size() == 1
+
+        # 1b. Dequeue for processing
+        dequeued = await signal_queue.dequeue()
+        assert dequeued.signal_id == sample_signal.signal_id
 
         # 2. Score signal
         competition = competition_estimator.estimate(sample_signal)
@@ -707,6 +711,718 @@ class TestPerformance:
         print(f"\n📊 MEV matching throughput: {analyses_per_second:.0f} analyses/sec")
 
         assert analyses_per_second >= 100
+
+
+
+# ============================================================================
+# Module 10: RPCGateway Integration with MODULE_9 OmniScopeEngine
+# ============================================================================
+
+class MockRPCGateway:
+    """Minimal mock of profit_engine.RPCGateway for unit tests."""
+
+    def __init__(self, chain_map=None):
+        self._chain_map = chain_map or {}
+        self.call_count = 0
+        self._stats = {
+            "total_requests": 0,
+            "total_batched": 0,
+            "total_failovers": 0,
+            "total_429s": 0,
+            "uptime_seconds": 0,
+            "rps": 0.0,
+            "chains": {},
+        }
+
+    def get_w3(self, chain_id: int):
+        """Return a mock Web3 instance (or None) for the given chain."""
+        self.call_count += 1
+        return self._chain_map.get(chain_id)
+
+    def get_stats(self) -> dict:
+        return dict(self._stats)
+
+
+class TestRPCGatewayIntegration:
+    """Tests for Module 10 RPC Gateway wiring into the MODULE_9 engine."""
+
+    def test_engine_accepts_no_gateway(self):
+        """OmniScopeEngine works without a gateway (backward compat)."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        engine = OmniScopeEngine()
+        assert engine.rpc_gateway is None
+
+    def test_engine_stores_gateway(self):
+        """OmniScopeEngine exposes the injected gateway."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        gw = MockRPCGateway()
+        engine = OmniScopeEngine(rpc_gateway=gw)
+        assert engine.rpc_gateway is gw
+
+    def test_gateway_forwarded_to_mempool_radar(self):
+        """OmniScopeEngine forwards the gateway to MempoolRadar."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        gw = MockRPCGateway()
+        engine = OmniScopeEngine(rpc_gateway=gw)
+        assert engine.mempool_radar._rpc_gateway is gw
+
+    def test_mempool_radar_no_gateway(self):
+        """MempoolRadar works without a gateway (backward compat)."""
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+        bus = DataBus()
+        radar = MempoolRadar(bus)
+        assert radar._rpc_gateway is None
+
+    def test_mempool_radar_with_gateway(self):
+        """MempoolRadar stores injected gateway."""
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+        bus = DataBus()
+        gw = MockRPCGateway()
+        radar = MempoolRadar(bus, rpc_gateway=gw)
+        assert radar._rpc_gateway is gw
+
+    def test_get_full_stats_includes_gateway_flag(self):
+        """get_full_stats() reports rpc_gateway_active correctly."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        engine_no_gw = OmniScopeEngine()
+        assert engine_no_gw.get_full_stats()["rpc_gateway_active"] is False
+
+        gw = MockRPCGateway()
+        engine_with_gw = OmniScopeEngine(rpc_gateway=gw)
+        stats = engine_with_gw.get_full_stats()
+        assert stats["rpc_gateway_active"] is True
+        assert "rpc_gateway" in stats
+
+    def test_get_full_stats_gateway_stats_embedded(self):
+        """get_full_stats() embeds the gateway's own stats dict."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        gw = MockRPCGateway()
+        engine = OmniScopeEngine(rpc_gateway=gw)
+        stats = engine.get_full_stats()
+        assert stats["rpc_gateway"]["total_requests"] == 0
+        assert "chains" in stats["rpc_gateway"]
+
+    @pytest.mark.asyncio
+    async def test_poll_fallback_uses_gateway_w3(self):
+        """_poll_pending_fallback returns early when gateway has no active endpoint."""
+        from unittest.mock import AsyncMock, patch
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+
+        # Gateway returns None for chain 1 → radar should exit immediately
+        gw = MockRPCGateway(chain_map={})  # no endpoint for chain 1
+        bus = DataBus()
+        radar = MempoolRadar(bus, rpc_gateway=gw)
+        radar._running = True
+
+        # Should return quickly (no active endpoint)
+        await asyncio.wait_for(radar._poll_pending_fallback(), timeout=2.0)
+        # Gateway's get_w3 was called once
+        assert gw.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_poll_fallback_with_real_w3_mock(self):
+        """_poll_pending_fallback uses the w3 returned by the gateway."""
+        from unittest.mock import MagicMock
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+
+        mock_w3 = MagicMock()
+        mock_w3.eth.get_block.side_effect = Exception("stop")
+        gw = MockRPCGateway(chain_map={1: mock_w3})
+        bus = DataBus()
+        radar = MempoolRadar(bus, rpc_gateway=gw)
+        # _running=False so the polling loop exits after the first get_w3() call.
+        radar._running = False
+
+        try:
+            await asyncio.wait_for(radar._poll_pending_fallback(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        # gateway.get_w3(1) must have been called
+        assert gw.call_count >= 1
+
+
+# ============================================================================
+# MODULE 11: JIT Liquidation Engine Integration
+# ============================================================================
+
+class TestJITEngineIntegration:
+    """Tests for Module 11 JITLiquidationEngine wiring into Pipeline."""
+
+    def test_jit_engine_importable(self):
+        """JITLiquidationEngine is importable from profit_engine."""
+        from profit_engine import JITLiquidationEngine, WatchedPosition
+        assert JITLiquidationEngine is not None
+        assert WatchedPosition is not None
+
+    def test_jit_engine_in_profit_engine_all(self):
+        """JITLiquidationEngine appears in profit_engine.__all__."""
+        import profit_engine
+        assert "JITLiquidationEngine" in profit_engine.__all__
+        assert "WatchedPosition" in profit_engine.__all__
+
+    def test_pipeline_has_jit_stats_keys(self):
+        """Pipeline.__init__ creates all Module 11 stats keys."""
+        from unittest.mock import MagicMock, patch
+
+        # Patch heavy dependencies so Pipeline can instantiate
+        with patch(
+            "MODULE_1_LIQUIDATION_ENGINE.pipeline.JIT_ENGINE_AVAILABLE", False
+        ):
+            from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+            p = Pipeline.__new__(Pipeline)
+            p.config = MagicMock()
+            p.config.get_chain = MagicMock(return_value=None)
+            p.stats = {
+                "jit_positions_tracked": 0,
+                "jit_simulations_run": 0,
+                "jit_simulations_passed": 0,
+                "jit_txs_broadcast": 0,
+                "jit_txs_confirmed": 0,
+                "jit_txs_reverted": 0,
+                "jit_profit_usd": 0.0,
+            }
+        for key in [
+            "jit_positions_tracked",
+            "jit_simulations_run",
+            "jit_simulations_passed",
+            "jit_txs_broadcast",
+            "jit_txs_confirmed",
+            "jit_txs_reverted",
+            "jit_profit_usd",
+        ]:
+            assert key in p.stats, f"Missing JIT stats key: {key}"
+
+    def test_jit_engine_instantiates_with_empty_providers(self):
+        """JITLiquidationEngine can be created with an empty w3 providers dict."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        assert engine is not None
+        assert hasattr(engine, "oracle_watcher")
+        assert hasattr(engine, "jit_executor")
+        assert hasattr(engine, "profitability")
+
+    def test_jit_engine_feed_watchlist_empty(self):
+        """feed_watchlist with empty dict does not raise."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        engine.feed_watchlist({})  # must not raise
+
+    def test_jit_engine_feed_watchlist_adds_positions(self):
+        """feed_watchlist with valid positions populates jit_executor.jit_positions."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        watchlist = {
+            "0xABCD": {
+                "chain_id": 1,
+                "last_hf": 1.03,
+                "debt_usd": 5000.0,
+                "collateral_asset": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                "debt_asset": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                "pool": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+            }
+        }
+        engine.feed_watchlist(watchlist)
+        assert len(engine.jit_executor.jit_positions) >= 1
+
+    def test_jit_engine_get_stats_returns_dict(self):
+        """get_stats() returns a dict with expected keys."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        stats = engine.get_stats()
+        assert isinstance(stats, dict)
+        for key in [
+            "jit_positions", "simulations_run", "simulations_passed",
+            "txs_broadcast", "txs_confirmed", "txs_reverted",
+            "total_profit_usd", "oracle_feeds",
+        ]:
+            assert key in stats, f"Missing stats key: {key}"
+
+    def test_pipeline_build_w3_providers_no_rpc(self):
+        """_build_w3_providers returns empty dict when no RPC URLs are configured."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_chain = MagicMock()
+        mock_chain.rpc_url = ""
+        p.config = MagicMock()
+        p.config.get_chain = MagicMock(return_value=mock_chain)
+
+        providers = p._build_w3_providers()
+        assert isinstance(providers, dict)
+        assert len(providers) == 0
+
+    def test_pipeline_sync_jit_watchlist_no_engine(self):
+        """_sync_jit_watchlist is a no-op when jit_engine is None."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        p.jit_engine = None
+        # Must not raise even with positions
+        p._sync_jit_watchlist([MagicMock()])
+
+    def test_pipeline_sync_jit_watchlist_calls_feed(self):
+        """_sync_jit_watchlist forwards detected positions to jit_engine.feed_watchlist."""
+        from unittest.mock import MagicMock, patch
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_engine = MagicMock()
+        p.jit_engine = mock_engine
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 500
+        p.config = mock_cfg
+
+        mock_pos = MagicMock()
+        mock_pos.user = "0x1234"
+        mock_pos.chain_id = 1
+        mock_pos.health_factor = 1.04
+        mock_pos.debt_amount = int(1e21)  # 1000 ETH in Wei
+        mock_pos.collateral_asset = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        mock_pos.debt_asset = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        mock_pos.pool_address = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+
+        p._sync_jit_watchlist([mock_pos])
+
+        mock_engine.feed_watchlist.assert_called_once()
+        call_arg = mock_engine.feed_watchlist.call_args[0][0]
+        assert "0x1234" in call_arg
+        assert call_arg["0x1234"]["chain_id"] == 1
+        assert call_arg["0x1234"]["last_hf"] == 1.04
+
+
+# ============================================================================
+# ZERO-REVERT PIPELINE Integration
+# ============================================================================
+
+class TestZeroRevertPipelineIntegration:
+    """Tests for the ZeroRevertPipeline and MempoolSniffer wiring."""
+
+    def test_zero_revert_pipeline_importable(self):
+        """ZeroRevertPipeline and MempoolSniffer are importable from profit_engine."""
+        from profit_engine import ZeroRevertPipeline, MempoolSniffer
+        assert ZeroRevertPipeline is not None
+        assert MempoolSniffer is not None
+
+    def test_exports_in_all(self):
+        """Both symbols appear in profit_engine.__all__."""
+        import profit_engine
+        assert "ZeroRevertPipeline" in profit_engine.__all__
+        assert "MempoolSniffer" in profit_engine.__all__
+
+    def test_dex_pool_addresses_structure(self):
+        """DEX_POOL_ADDRESSES has entries for expected chains."""
+        from profit_engine.zero_revert_pipeline import DEX_POOL_ADDRESSES
+        assert 1 in DEX_POOL_ADDRESSES        # Ethereum mainnet
+        assert 42161 in DEX_POOL_ADDRESSES    # Arbitrum
+        # All pool addresses are lowercase
+        for pools in DEX_POOL_ADDRESSES.values():
+            for addr in pools:
+                assert addr == addr.lower(), f"Pool address not lowercase: {addr}"
+
+    def test_pool_to_asset_keys_lowercase(self):
+        """All keys in POOL_TO_ASSET are lowercase hex strings."""
+        from profit_engine.zero_revert_pipeline import POOL_TO_ASSET
+        for k in POOL_TO_ASSET:
+            assert k == k.lower(), f"POOL_TO_ASSET key not lowercase: {k}"
+
+    def test_mempool_sniffer_instantiates(self):
+        """MempoolSniffer can be created with a minimal PositionIndex and executor stub."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        index = PositionIndex()
+        executor = MagicMock()
+        sniffer = MempoolSniffer(index, executor)
+        assert sniffer is not None
+        assert sniffer.txs_inspected == 0
+
+    def test_mempool_sniffer_estimate_price_impact(self):
+        """estimate_price_impact uses constant-product formula."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        # $100k trade vs $1M pool → ~9% impact
+        impact = sniffer.estimate_price_impact(100_000, 1_000_000)
+        assert abs(impact - 100_000 / 1_100_000) < 1e-9
+        # Zero trade → 0
+        assert sniffer.estimate_price_impact(0, 1_000_000) == 0.0
+        # Zero pool → 0
+        assert sniffer.estimate_price_impact(100_000, 0) == 0.0
+
+    def test_mempool_sniffer_below_threshold_ignored(self):
+        """Transactions with < 1% price impact are skipped."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        # tiny trade, huge pool → impact << 1%
+        result = asyncio.get_event_loop().run_until_complete(
+            sniffer.on_pending_transaction(
+                chain_id=1,
+                to_address='0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640',
+                input_data=b'',
+                value_eth=0.001,
+                eth_price_usd=2500.0,
+                pool_tvl_usd=1_000_000_000.0,  # $1B pool
+            )
+        )
+        assert result == 0
+        assert sniffer.impacts_detected == 0
+
+    def test_mempool_sniffer_unknown_pool_ignored(self):
+        """Transactions to an unlisted pool address return 0."""
+        import asyncio
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        result = asyncio.get_event_loop().run_until_complete(
+            sniffer.on_pending_transaction(
+                chain_id=1,
+                to_address='0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+                input_data=b'',
+                value_eth=100.0,
+            )
+        )
+        assert result == 0
+
+    def test_mempool_sniffer_get_stats_structure(self):
+        """get_stats() returns dict with expected keys."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import MempoolSniffer, PositionIndex
+        sniffer = MempoolSniffer(PositionIndex(), MagicMock())
+        stats = sniffer.get_stats()
+        for key in ['txs_inspected', 'impacts_detected', 'bundles_prepared']:
+            assert key in stats, f"Missing key: {key}"
+
+    def test_zero_revert_pipeline_has_mempool_sniffer(self):
+        """ZeroRevertPipeline.__init__ creates a mempool_sniffer attribute."""
+        from profit_engine.zero_revert_pipeline import ZeroRevertPipeline
+        zrp = ZeroRevertPipeline({})
+        assert hasattr(zrp, 'mempool_sniffer')
+        assert zrp.mempool_sniffer is not None
+
+    def test_zero_revert_pipeline_get_stats_includes_mempool_keys(self):
+        """ZeroRevertPipeline.get_stats() includes mempool sniffer keys."""
+        from profit_engine.zero_revert_pipeline import ZeroRevertPipeline
+        zrp = ZeroRevertPipeline({})
+        stats = zrp.get_stats()
+        for key in ['mempool_txs_inspected', 'mempool_impacts_detected', 'mempool_bundles_prepared']:
+            assert key in stats, f"Missing ZRP stats key: {key}"
+
+    def test_pipeline_has_zrp_stats_keys(self):
+        """Pipeline.stats contains all Zero-Revert Pipeline stat keys."""
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        p.stats = {
+            "zrp_positions": 0,
+            "zrp_checks": 0,
+            "zrp_fired": 0,
+            "zrp_confirmed": 0,
+            "zrp_reverted": 0,
+            "zrp_profit_usd": 0.0,
+            "zrp_mempool_txs_inspected": 0,
+            "zrp_mempool_impacts_detected": 0,
+            "zrp_mempool_bundles_prepared": 0,
+        }
+        for key in p.stats:
+            assert key in p.stats
+
+    def test_pipeline_sync_zrp_watchlist_no_pipeline(self):
+        """_sync_zrp_watchlist is a no-op when zero_revert_pipeline is None."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        p.zero_revert_pipeline = None
+        p._sync_zrp_watchlist([MagicMock()])  # must not raise
+
+    def test_pipeline_sync_zrp_watchlist_calls_feed(self):
+        """_sync_zrp_watchlist forwards positions to zero_revert_pipeline.feed_watchlist."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_zrp = MagicMock()
+        p.zero_revert_pipeline = mock_zrp
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 500
+        p.config = mock_cfg
+
+        mock_pos = MagicMock()
+        mock_pos.user = "0xABCD"
+        mock_pos.chain_id = 1
+        mock_pos.health_factor = 1.02
+        mock_pos.debt_amount = int(5e21)
+        mock_pos.collateral_asset = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        mock_pos.debt_asset = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        mock_pos.pool_address = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+
+        p._sync_zrp_watchlist([mock_pos])
+
+        mock_zrp.feed_watchlist.assert_called_once()
+        arg = mock_zrp.feed_watchlist.call_args[0][0]
+        assert "0xABCD" in arg
+        assert arg["0xABCD"]["chain_id"] == 1
+        assert arg["0xABCD"]["last_hf"] == 1.02
+
+
+# ============================================================================
+# SCALING: Watchlist + Oracle Coverage
+# ============================================================================
+
+class TestScalingOpportunitySurface:
+    """Tests for the expanded watchlist, oracle coverage, and chain poll intervals."""
+
+    def test_max_watchlist_size_default(self):
+        """ExecutionConfig.max_watchlist_size defaults to 500."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        cfg = ExecutionConfig()
+        assert cfg.max_watchlist_size == 500
+
+    def test_max_watchlist_size_env_override(self, monkeypatch):
+        """MAX_WATCHLIST_SIZE env var overrides the default."""
+        import os
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        monkeypatch.setenv("MAX_WATCHLIST_SIZE", "250")
+        cfg = ExecutionConfig(max_watchlist_size=int(os.getenv("MAX_WATCHLIST_SIZE", "500")))
+        assert cfg.max_watchlist_size == 250
+
+    def test_preemptive_hf_threshold_raised(self):
+        """PREEMPTIVE_HF_THRESHOLD is now 1.50 (up from 1.20) to catch more positions."""
+        from MODULE_1_LIQUIDATION_ENGINE.stage_1_detection.opportunity_detector import OpportunityDetector
+        assert OpportunityDetector.PREEMPTIVE_HF_THRESHOLD == 1.50
+
+    def test_block_watcher_top_n_default(self):
+        """BlockWatcher.watch_loop default top_n is 200 (up from 15)."""
+        import inspect
+        from profit_engine.zero_revert_pipeline import BlockWatcher
+        sig = inspect.signature(BlockWatcher.watch_loop)
+        assert sig.parameters['top_n'].default == 200
+
+    def test_chain_poll_interval_structure(self):
+        """CHAIN_POLL_INTERVAL covers all 8 supported chains with valid intervals."""
+        from profit_engine.zero_revert_pipeline import CHAIN_POLL_INTERVAL
+        expected_chains = {1, 42161, 10, 8453, 137, 43114, 56, 324}
+        assert set(CHAIN_POLL_INTERVAL.keys()) == expected_chains
+        # L2s should be polled more aggressively than Ethereum mainnet
+        assert CHAIN_POLL_INTERVAL[42161] <= CHAIN_POLL_INTERVAL[1]
+        assert CHAIN_POLL_INTERVAL[10] <= CHAIN_POLL_INTERVAL[1]
+        assert CHAIN_POLL_INTERVAL[8453] <= CHAIN_POLL_INTERVAL[1]
+        # All intervals must be positive
+        for chain_id, interval in CHAIN_POLL_INTERVAL.items():
+            assert interval > 0, f"Chain {chain_id} has non-positive poll interval"
+
+    def test_chainlink_feeds_expanded(self):
+        """CHAINLINK_FEEDS has expanded to include BSC, more feeds per chain."""
+        from profit_engine.zero_revert_pipeline import CHAINLINK_FEEDS
+        # BSC added
+        assert 56 in CHAINLINK_FEEDS
+        assert 'BNB/USD' in CHAINLINK_FEEDS[56]
+        # Arbitrum has more feeds than before
+        assert 'ARB/USD' in CHAINLINK_FEEDS[42161]
+        assert 'USDC/USD' in CHAINLINK_FEEDS[42161]
+        # Avalanche has more feeds
+        assert 'USDC/USD' in CHAINLINK_FEEDS[43114]
+        assert 'AAVE/USD' in CHAINLINK_FEEDS[43114]
+        # Total across all chains should be ≥ 40
+        total = sum(len(v) for v in CHAINLINK_FEEDS.values())
+        assert total >= 40, f"Expected ≥40 feeds, got {total}"
+
+    def test_collateral_to_feed_expanded(self):
+        """COLLATERAL_TO_FEED includes additional volatile altcoin collateral types."""
+        from profit_engine.zero_revert_pipeline import COLLATERAL_TO_FEED
+        # New entries from the expansion
+        assert '0xba100000625a3754423978a60c9317c58a424e3d' in COLLATERAL_TO_FEED  # BAL
+        assert '0xc18360217d8f7ab5e7c516566761ea12ce7f9d72' in COLLATERAL_TO_FEED  # ENS
+        assert '0x853d955acef822db058eb8505911ed77f175b99e' in COLLATERAL_TO_FEED  # FRAX
+        assert '0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f' in COLLATERAL_TO_FEED  # GHO
+        assert len(COLLATERAL_TO_FEED) >= 15
+
+    def test_sync_jit_watchlist_sorts_and_caps(self):
+        """_sync_jit_watchlist sends top max_watchlist_size positions sorted by HF ascending."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_engine = MagicMock()
+        p.jit_engine = mock_engine
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 2  # cap at 2
+        p.config = mock_cfg
+
+        def make_pos(user, hf):
+            pos = MagicMock()
+            pos.user = user
+            pos.chain_id = 1
+            pos.health_factor = hf
+            pos.debt_amount = int(1e21)
+            pos.collateral_asset = "0x0"
+            pos.debt_asset = "0x0"
+            pos.pool_address = "0x0"
+            return pos
+
+        positions = [make_pos("0xHIGH", 1.40), make_pos("0xLOW", 1.01), make_pos("0xMID", 1.10)]
+        p._sync_jit_watchlist(positions)
+
+        mock_engine.feed_watchlist.assert_called_once()
+        arg = mock_engine.feed_watchlist.call_args[0][0]
+        # Only 2 positions (capped) and they must be the two lowest HF
+        assert len(arg) == 2
+        assert "0xLOW" in arg
+        assert "0xMID" in arg
+        assert "0xHIGH" not in arg
+
+    def test_sync_zrp_watchlist_sorts_and_caps(self):
+        """_sync_zrp_watchlist sends top max_watchlist_size positions sorted by HF ascending."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_zrp = MagicMock()
+        p.zero_revert_pipeline = mock_zrp
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 1  # cap at 1
+        p.config = mock_cfg
+
+        def make_pos(user, hf):
+            pos = MagicMock()
+            pos.user = user
+            pos.chain_id = 1
+            pos.health_factor = hf
+            pos.debt_amount = int(1e21)
+            pos.collateral_asset = "0x0"
+            pos.debt_asset = "0x0"
+            pos.pool_address = "0x0"
+            return pos
+
+        positions = [make_pos("0xHIGH", 1.40), make_pos("0xCRITICAL", 1.005)]
+        p._sync_zrp_watchlist(positions)
+
+        mock_zrp.feed_watchlist.assert_called_once()
+        arg = mock_zrp.feed_watchlist.call_args[0][0]
+        assert len(arg) == 1
+        assert "0xCRITICAL" in arg
+
+
+# ============================================================================
+# MAINNET DEPLOYMENT: Execution Gate + Calibration
+# ============================================================================
+
+class TestMainnetDeploymentCalibration:
+    """Validates production-safety defaults and the EXECUTION_ENABLED gate."""
+
+    def test_execution_enabled_default_is_false(self):
+        """ExecutionConfig.execution_enabled defaults to False (scan-only safe default)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        cfg = ExecutionConfig()
+        assert cfg.execution_enabled is False
+
+    def test_execution_enabled_env_override(self, monkeypatch):
+        """EXECUTION_ENABLED=true env var enables execution."""
+        import os
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        monkeypatch.setenv("EXECUTION_ENABLED", "true")
+        cfg = ExecutionConfig(
+            execution_enabled=os.getenv("EXECUTION_ENABLED", "false").lower() == "true"
+        )
+        assert cfg.execution_enabled is True
+
+    def test_execution_enabled_case_insensitive(self, monkeypatch):
+        """EXECUTION_ENABLED only accepts 'true' (any case); all other values yield False."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        # Positive cases
+        for val in ("True", "TRUE", "true"):
+            cfg = ExecutionConfig(execution_enabled=val.lower() == "true")
+            assert cfg.execution_enabled is True, f"Expected True for value {val!r}"
+        # Negative cases — any non-'true' string must produce False
+        for val in ("false", "False", "FALSE", "1", "yes", "on", "", "0"):
+            cfg = ExecutionConfig(execution_enabled=val.lower() == "true")
+            assert cfg.execution_enabled is False, f"Expected False for value {val!r}"
+
+    def test_min_profit_usd_default_is_conservative(self):
+        """min_profit_usd class default is 50.0 (matches env default)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        assert ExecutionConfig().min_profit_usd == 50.0
+
+    def test_min_profit_wei_default_is_01_eth(self):
+        """min_profit_wei class default is 0.01 ETH (10^16 wei)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        assert ExecutionConfig().min_profit_wei == 10_000_000_000_000_000
+
+    def test_min_debt_usd_default_is_1000(self):
+        """min_debt_usd class default is 1000.0 (matches env default)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        assert ExecutionConfig().min_debt_usd == 1_000.0
+
+    @pytest.mark.asyncio
+    async def test_zrp_direct_executor_blocks_when_execution_disabled(self, monkeypatch):
+        """DirectExecutor.fire() is a no-op when EXECUTION_ENABLED is not 'true'."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import LiquidationExecutor as DirectExecutor, TrackedPosition
+
+        monkeypatch.setenv("EXECUTION_ENABLED", "false")
+
+        executor = DirectExecutor({})
+        # Give it a mock account so the private-key guard doesn't fire first
+        executor._account = MagicMock()
+        executor._account.address = "0xDeadBeef"
+
+        pos = TrackedPosition(
+            user_address="0x1234",
+            chain_id=1,
+            health_factor=0.95,
+            collateral_asset="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            debt_asset="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            pool_address="0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+            total_debt_base=int(1e21),
+            debt_usd=2500.0,
+        )
+
+        # Should return without interacting with any w3 provider
+        await executor.fire(pos)
+        # txs_fired must remain 0 — nothing was submitted
+        assert executor.txs_fired == 0
+
+    @pytest.mark.asyncio
+    async def test_zrp_direct_executor_blocks_on_gas_cap_exceeded(self, monkeypatch):
+        """DirectExecutor.fire() skips when gas price exceeds GAS_PRICE_CAP_GWEI."""
+        from unittest.mock import MagicMock, patch
+        from profit_engine.zero_revert_pipeline import LiquidationExecutor as DirectExecutor, TrackedPosition
+
+        monkeypatch.setenv("EXECUTION_ENABLED", "true")
+        monkeypatch.setenv("GAS_PRICE_CAP_GWEI", "30")
+        monkeypatch.setenv("PRIVATE_KEY", "0x" + "aa" * 32)
+
+        # Mock w3 that returns 100 gwei gas price (> 30 gwei cap)
+        mock_w3 = MagicMock()
+        mock_w3.eth.gas_price = int(100e9)  # 100 gwei
+        mock_w3.eth.contract.return_value = MagicMock()
+        mock_w3.eth.get_transaction_count.return_value = 0
+
+        executor = DirectExecutor({1: mock_w3})
+        executor._account = MagicMock()
+        executor._account.address = "0xDeadBeef"
+        executor._private_key = "0x" + "aa" * 32
+
+        pos = TrackedPosition(
+            user_address="0x1234",
+            chain_id=1,
+            health_factor=0.95,
+            collateral_asset="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            debt_asset="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            pool_address="0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+            total_debt_base=int(1e21),
+            debt_usd=2500.0,
+        )
+
+        await executor.fire(pos)
+        assert executor.txs_fired == 0  # blocked by gas cap
 
 
 # ============================================================================

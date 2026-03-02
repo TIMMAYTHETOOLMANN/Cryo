@@ -28,6 +28,7 @@ from ..flash_loan_providers.aggregator import (
     FlashLoanAggregator,
     FlashLoanProviderType,
     get_flash_loan_aggregator,
+    get_provider_registry,
 )
 from ..calculators.profitability_calculator import (
     ProfitabilityCalculator,
@@ -307,6 +308,17 @@ class LiquidationExecutor:
         if not private_key:
             return self._fail(request, "No PRIVATE_KEY configured — scan-only mode")
 
+        # ---- Execution safety gate ----
+        # EXECUTION_ENABLED must be explicitly set to true in the environment to
+        # submit live transactions.  This prevents accidental mainnet execution
+        # during testing or misconfigured deployments.
+        if not self.config.execution.execution_enabled:
+            logger.info(
+                "🔒 EXECUTION_ENABLED=false — opportunity detected but transaction "
+                "not submitted.  Set EXECUTION_ENABLED=true to enable live execution."
+            )
+            return self._fail(request, "EXECUTION_ENABLED=false — scan-only mode")
+
         # ---- 1. Profitability pre-flight ----
         profitability = await self._check_profitability(request, w3)
         if not profitability.is_profitable:
@@ -320,8 +332,9 @@ class LiquidationExecutor:
             f"(ROI {profitability.roi_percent:.1f}%)"
         )
 
-        # ---- 2. Select flash loan provider ----
-        if request.flash_loan_provider is None:
+        # ---- 2. Select flash loan provider (adaptive: uses success history) ----
+        selected_provider: Optional[FlashLoanProviderType] = request.flash_loan_provider
+        if selected_provider is None:
             quote = await self.flash_aggregator.get_best_quote(
                 chain_id=chain_id,
                 asset=request.debt_asset,
@@ -330,6 +343,7 @@ class LiquidationExecutor:
             )
             if not quote:
                 return self._fail(request, "No flash loan provider available")
+            selected_provider = quote.provider
             logger.info(f"⚡ Best provider: {quote.provider.value} (fee {quote.fee_percentage*100:.3f}%)")
         else:
             logger.info(f"⚡ Using requested provider: {request.flash_loan_provider.value}")
@@ -338,7 +352,20 @@ class LiquidationExecutor:
         logger.info("⚡ PRODUCTION MODE — submitting transaction directly")
 
         # ---- 4. Submit transaction ----
+        _submit_start = time.monotonic()
         result = await self._submit_transaction(request, w3, private_key)
+        submit_latency_ms = (time.monotonic() - _submit_start) * 1000
+
+        # ---- 5. Feed execution outcome back into ProviderRegistry ----
+        #        This enables best_quote_adaptive() to learn over time and
+        #        deprioritise providers with poor historical success rates.
+        registry = get_provider_registry()
+        registry.record_result(
+            selected_provider,
+            success=result.success,
+            amount=request.debt_amount,
+            latency_ms=submit_latency_ms,
+        )
 
         if result.success:
             self.stats["liquidations_succeeded"] += 1

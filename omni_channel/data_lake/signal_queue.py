@@ -149,6 +149,51 @@ class SignalQueue:
     def is_empty(self) -> bool:
         """Check if queue is empty"""
         return len(self._queue) == 0
+
+    async def enqueue(self, signal: OpportunitySignal, priority: Priority = None):
+        """Add a signal to the queue.
+
+        If `priority` is not explicitly specified, it is derived from the
+        signal's `urgency_score` (0-100) so that high-urgency signals are
+        processed before low-urgency ones:
+            urgency >= 80  → CRITICAL
+            urgency >= 60  → HIGH
+            urgency >= 30  → NORMAL
+            urgency  < 30  → LOW
+        """
+        if priority is None:
+            urgency = getattr(signal, 'urgency_score', 50)
+            if urgency >= 80:
+                priority = Priority.CRITICAL
+            elif urgency >= 60:
+                priority = Priority.HIGH
+            elif urgency >= 30:
+                priority = Priority.NORMAL
+            else:
+                priority = Priority.LOW
+        return await self.put(signal, priority)
+
+    async def dequeue(self, timeout: Optional[float] = None) -> Optional[OpportunitySignal]:
+        """Remove and return highest-priority signal.
+
+        Checks for existing items immediately before blocking on the condition
+        variable, so it works correctly when items were enqueued before this
+        call (i.e., the condition notification was already consumed).
+        """
+        # Fast path: drain any items already in the queue
+        async with self._lock:
+            while self._queue:
+                prioritized = heapq.heappop(self._queue)
+                signal = prioritized.signal
+                if signal.signal_id in self._signal_map:
+                    del self._signal_map[signal.signal_id]
+                if signal.is_expired(signal.expiry_block):
+                    self.signals_expired += 1
+                    continue
+                self.signals_removed += 1
+                return signal
+        # Queue was empty — fall back to blocking get()
+        return await self.get(timeout=timeout)
     
     def get_stats(self) -> Dict:
         """Get queue statistics"""

@@ -81,7 +81,7 @@ class MempoolRadar:
     Classifies pending TXs and emits signals to the DataBus.
     """
 
-    def __init__(self, bus: DataBus, config: Optional[OmniScopeConfig] = None):
+    def __init__(self, bus: DataBus, config: Optional[OmniScopeConfig] = None, rpc_gateway=None):
         self.bus = bus
         self.config = config or get_omni_config()
         self._cfg = self.config.mempool_radar
@@ -89,6 +89,9 @@ class MempoolRadar:
         self._seen: Set[str] = set()
         self._max_seen = self._cfg.max_pending_cache
         self._providers_connected = 0
+        # Optional RPCGateway (Module 10) — used in _poll_pending_fallback for
+        # managed rate limiting, circuit breaking, and automatic failover.
+        self._rpc_gateway = rpc_gateway
 
         # Recent TX buffer for pattern analysis
         self._recent: deque[PendingTransaction] = deque(maxlen=1000)
@@ -240,15 +243,29 @@ class MempoolRadar:
     # ------------------------------------------------------------------
 
     async def _poll_pending_fallback(self):
-        """Fallback: poll pending block every second."""
+        """Fallback: poll pending block every second.
+
+        Prefers the RPCGateway (Module 10) when available, giving managed
+        rate limiting, circuit breaking and automatic failover across all 96+
+        endpoints.  Falls back to a direct Web3 connection when no gateway is
+        injected.
+        """
         import os
         rpc = os.getenv("MAINNET_RPC_URL", "")
-        if not rpc:
+        if not rpc and self._rpc_gateway is None:
             logger.warning("No Ethereum RPC — mempool radar inactive")
             return
 
-        w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 10}))
-        logger.info("📡 Mempool Radar: using RPC polling fallback")
+        # Prefer the managed gateway; fall back to a plain Web3 connection.
+        connection_type = "RPCGateway" if self._rpc_gateway is not None else "direct Web3"
+        if self._rpc_gateway is not None:
+            w3 = self._rpc_gateway.get_w3(1)  # chain_id 1 = Ethereum mainnet
+        else:
+            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 10}))
+        if w3 is None:
+            logger.warning("RPCGateway has no active endpoint for chain 1 — mempool radar inactive")
+            return
+        logger.info("📡 Mempool Radar: using %s for RPC polling fallback", connection_type)
 
         while self._running:
             try:
