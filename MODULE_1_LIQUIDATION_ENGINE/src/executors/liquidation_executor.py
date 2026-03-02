@@ -335,16 +335,14 @@ class LiquidationExecutor:
         # ---- 2. Select flash loan provider (adaptive: uses success history) ----
         selected_provider: Optional[FlashLoanProviderType] = request.flash_loan_provider
         if selected_provider is None:
-            quote = await self.flash_aggregator.get_best_quote(
-                chain_id=chain_id,
+            quote = self.flash_aggregator.best_quote(
                 asset=request.debt_asset,
                 amount=request.debt_amount,
-                recipient=self._executor_addresses.get("v2", ""),
             )
             if not quote:
                 return self._fail(request, "No flash loan provider available")
             selected_provider = quote.provider
-            logger.info(f"⚡ Best provider: {quote.provider.value} (fee {quote.fee_percentage*100:.3f}%)")
+            logger.info(f"⚡ Best provider: {quote.provider.value} (fee {quote.fee_bps:.2f} bps)")
         else:
             logger.info(f"⚡ Using requested provider: {request.flash_loan_provider.value}")
 

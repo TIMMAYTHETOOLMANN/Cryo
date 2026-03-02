@@ -39,6 +39,12 @@ contract AaveV3LiquidationAdapter is ILiquidationAdapter {
         address user,
         uint256 debtAmount
     ) external override returns (uint256 collateralSeized) {
+        // Pull the debt tokens from the caller (executor)
+        require(
+            IERC20(debtAsset).transferFrom(msg.sender, address(this), debtAmount),
+            "Debt transferFrom failed"
+        );
+
         uint256 before = IERC20(collateralAsset).balanceOf(address(this));
 
         IERC20(debtAsset).approve(address(POOL), debtAmount);
