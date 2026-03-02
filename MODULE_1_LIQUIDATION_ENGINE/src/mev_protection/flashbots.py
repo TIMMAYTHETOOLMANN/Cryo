@@ -38,6 +38,8 @@ class MEVRoute(Enum):
     """Transaction routing strategy"""
     DIRECT = "direct"                # Standard public mempool
     FLASHBOTS = "flashbots"          # Flashbots Protect relay
+    FLASHBOTS_BUILDER = "flashbots_builder"  # Flashbots Builder API
+    MEV_SHARE = "mev_share"          # Flashbots MEV-Share (order flow auction)
     BLOXROUTE = "bloxroute"          # bloXroute BDN private mempool
     MEV_BLOCKER = "mev_blocker"      # MEV Blocker (CoW Protocol)
 
@@ -111,6 +113,12 @@ class MEVProtection:
     # Flashbots relay endpoint
     FLASHBOTS_RELAY = "https://relay.flashbots.net"
 
+    # Flashbots MEV-Share (Matchmaker) relay endpoint
+    MEV_SHARE_RELAY = "https://relay.flashbots.net"
+
+    # Default Flashbots Builder API endpoint
+    FLASHBOTS_BUILDER_URL = "https://builder0x69.io,https://rpc.beaverbuild.org,https://rsync-builder.xyz"
+
     # Chainlink AnswerUpdated event topic
     ANSWER_UPDATED_TOPIC = Web3.keccak(
         text="AnswerUpdated(int256,uint256,uint256)"
@@ -138,6 +146,21 @@ class MEVProtection:
         self._bloxroute_url = os.getenv("BLOXROUTE_BACKRUNNING_URL", "")
         self._bloxroute_auth = os.getenv("BLOXROUTE_AUTH_HEADER", "")
 
+        # MEV-Share relay (Flashbots Matchmaker)
+        self._mev_share_relay = os.getenv(
+            "MEV_SHARE_RELAY_URL", self.MEV_SHARE_RELAY
+        )
+
+        # Flashbots Builder API endpoints
+        self._builder_urls: List[str] = [
+            url.strip()
+            for url in os.getenv(
+                "FLASHBOTS_BUILDER_URLS",
+                self.FLASHBOTS_BUILDER_URL,
+            ).split(",")
+            if url.strip()
+        ]
+
         # Preferred routing (default to Flashbots)
         self.default_route = MEVRoute.FLASHBOTS
 
@@ -149,6 +172,8 @@ class MEVProtection:
             "bundles_submitted": 0,
             "bundles_included": 0,
             "bundles_failed": 0,
+            "mev_share_submitted": 0,
+            "builder_submitted": 0,
             "backruns_detected": 0,
             "total_mev_protected_usd": 0.0,
             "start_time": time.time(),
@@ -156,6 +181,8 @@ class MEVProtection:
 
         logger.info("MEVProtection initialized")
         logger.info(f"  Flashbots relay: {self._flashbots_relay}")
+        logger.info(f"  MEV-Share relay: {self._mev_share_relay}")
+        logger.info(f"  Builder endpoints: {len(self._builder_urls)}")
         logger.info(f"  Default route: {self.default_route.value}")
 
     # ------------------------------------------------------------------
@@ -471,15 +498,29 @@ class MEVProtection:
         signed_tx: str,
         w3: Web3,
         route: MEVRoute = MEVRoute.FLASHBOTS,
+        max_block_number: Optional[int] = None,
+        builders: Optional[List[str]] = None,
     ) -> Optional[str]:
         """
         Send a single transaction via a private mempool.
 
         For simple protection (no backrunning), this avoids the public
         mempool entirely.
+
+        Routes:
+          FLASHBOTS        — Flashbots Protect RPC (private, no bundle)
+          FLASHBOTS_BUILDER — Send directly to block builders via Flashbots
+          MEV_SHARE        — Flashbots MEV-Share order flow auction
+          BLOXROUTE        — bloXroute BDN private mempool
+          DIRECT           — Public mempool (no protection)
         """
         if route == MEVRoute.FLASHBOTS:
             return await self._send_via_flashbots_protect(signed_tx, w3)
+        elif route == MEVRoute.MEV_SHARE:
+            target_block = max_block_number or (w3.eth.block_number + 1)
+            return await self._send_via_mev_share(signed_tx, w3, target_block)
+        elif route == MEVRoute.FLASHBOTS_BUILDER:
+            return await self._send_via_builders(signed_tx, w3, builders)
         elif route == MEVRoute.BLOXROUTE:
             return await self._send_via_bloxroute(signed_tx)
         else:
@@ -555,6 +596,247 @@ class MEVProtection:
 
         except Exception as e:
             logger.error(f"bloXroute send error: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # MEV-Share / Matchmaker (Flashbots order flow auction)
+    # ------------------------------------------------------------------
+
+    async def _send_via_mev_share(
+        self, signed_tx: str, w3: Web3, target_block: int
+    ) -> Optional[str]:
+        """
+        Submit a transaction via Flashbots MEV-Share (Matchmaker).
+
+        MEV-Share allows searchers to share MEV with users via an order
+        flow auction. The bundle is submitted with privacy hints that
+        control what information is revealed to other searchers.
+
+        See: https://docs.flashbots.net/flashbots-mev-share/searchers/understanding-bundles
+        """
+        if not self._flashbots_signer:
+            logger.warning("MEV-Share: Flashbots signer not initialised")
+            return None
+
+        try:
+            import aiohttp
+
+            # MEV-Share uses mev_sendBundle with inclusion and privacy hints
+            bundle_params = {
+                "version": "v0.1",
+                "inclusion": {
+                    "block": hex(target_block),
+                    "maxBlock": hex(target_block + 5),
+                },
+                "body": [
+                    {"tx": signed_tx, "canRevert": False},
+                ],
+                "privacy": {
+                    "hints": [
+                        "contract_address",
+                        "function_selector",
+                        "calldata",
+                        "logs",
+                        "hash",
+                    ],
+                    "builders": ["flashbots"],
+                },
+            }
+
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mev_sendBundle",
+                "params": [bundle_params],
+            }
+
+            body = json.dumps(payload)
+            signature = self._sign_flashbots_payload(body)
+
+            headers = {
+                "Content-Type": "application/json",
+                "X-Flashbots-Signature": (
+                    f"{self._flashbots_signer.address}:{signature}"
+                ),
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self._mev_share_relay, json=payload, headers=headers
+                ) as resp:
+                    data = await resp.json()
+
+            if "error" in data:
+                logger.warning(f"MEV-Share error: {data['error']}")
+                return None
+
+            bundle_hash = data.get("result", {}).get("bundleHash", "")
+            self.stats["mev_share_submitted"] += 1
+
+            logger.info(
+                f"🔄 MEV-Share bundle submitted — hash {bundle_hash[:16]}… "
+                f"target block {target_block}"
+            )
+            return bundle_hash
+
+        except Exception as e:
+            logger.error(f"MEV-Share send error: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Flashbots Builder API (direct builder submission)
+    # ------------------------------------------------------------------
+
+    async def _send_via_builders(
+        self,
+        signed_tx: str,
+        w3: Web3,
+        builder_urls: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """
+        Submit a signed transaction directly to Flashbots block builders.
+
+        Sends eth_sendRawTransaction to multiple builder endpoints in
+        parallel for maximum inclusion probability.
+
+        See: https://docs.flashbots.net/flashbots-auction/advanced/builders
+        """
+        urls = builder_urls or self._builder_urls
+        if not urls:
+            logger.warning("No builder URLs configured")
+            return None
+
+        try:
+            import aiohttp
+
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "eth_sendRawTransaction",
+                "params": [signed_tx],
+            }
+
+            # Submit to all builders in parallel for best inclusion odds
+            results: List[Optional[str]] = []
+            async with aiohttp.ClientSession() as session:
+                tasks = []
+                for url in urls:
+                    tasks.append(
+                        self._submit_to_builder(session, url, payload)
+                    )
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Return the first successful result
+            for r in results:
+                if isinstance(r, str) and r:
+                    self.stats["builder_submitted"] += 1
+                    logger.info(f"🏗️ TX sent to builders: {r[:16]}…")
+                    return r
+
+            logger.warning("All builder submissions failed")
+            return None
+
+        except Exception as e:
+            logger.error(f"Builder API send error: {e}")
+            return None
+
+    async def _submit_to_builder(
+        self, session, url: str, payload: Dict
+    ) -> Optional[str]:
+        """Submit a transaction to a single builder endpoint."""
+        try:
+            async with session.post(
+                url, json=payload, timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                data = await resp.json()
+                if "result" in data:
+                    return data["result"]
+                return None
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # MEV-Share bundle with backrun (advanced)
+    # ------------------------------------------------------------------
+
+    async def submit_mev_share_backrun(
+        self,
+        backrun_signed_tx: str,
+        pending_tx_hash: str,
+        w3: Web3,
+    ) -> Optional[str]:
+        """
+        Submit a backrun bundle via MEV-Share, referencing a pending
+        transaction hash to execute after.
+
+        This is the primary MEV-Share searcher flow: watch for pending
+        transactions on the Matchmaker event stream, then submit a
+        backrun bundle that executes after the target transaction.
+
+        See: https://docs.flashbots.net/flashbots-mev-share/searchers/sending-bundles
+        """
+        if not self._flashbots_signer:
+            return None
+
+        target_block = w3.eth.block_number + 1
+
+        try:
+            import aiohttp
+
+            bundle_params = {
+                "version": "v0.1",
+                "inclusion": {
+                    "block": hex(target_block),
+                    "maxBlock": hex(target_block + 3),
+                },
+                "body": [
+                    {"hash": pending_tx_hash},
+                    {"tx": backrun_signed_tx, "canRevert": False},
+                ],
+                "privacy": {
+                    "builders": ["flashbots"],
+                },
+            }
+
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "mev_sendBundle",
+                "params": [bundle_params],
+            }
+
+            body = json.dumps(payload)
+            signature = self._sign_flashbots_payload(body)
+
+            headers = {
+                "Content-Type": "application/json",
+                "X-Flashbots-Signature": (
+                    f"{self._flashbots_signer.address}:{signature}"
+                ),
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    self._mev_share_relay, json=payload, headers=headers
+                ) as resp:
+                    data = await resp.json()
+
+            if "error" in data:
+                logger.warning(f"MEV-Share backrun error: {data['error']}")
+                return None
+
+            bundle_hash = data.get("result", {}).get("bundleHash", "")
+            self.stats["mev_share_submitted"] += 1
+            self.stats["backruns_detected"] += 1
+
+            logger.info(
+                f"🔄 MEV-Share backrun submitted — hash {bundle_hash[:16]}… "
+                f"backrunning {pending_tx_hash[:16]}…"
+            )
+            return bundle_hash
+
+        except Exception as e:
+            logger.error(f"MEV-Share backrun error: {e}")
             return None
 
     # ------------------------------------------------------------------

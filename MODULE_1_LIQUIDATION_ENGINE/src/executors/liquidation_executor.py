@@ -35,6 +35,7 @@ from ..calculators.profitability_calculator import (
     ProfitabilityResult,
     get_calculator,
 )
+from ..mev_protection.flashbots import MEVProtection, MEVRoute
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,7 @@ class LiquidationExecutor:
         self.config = config or get_config()
         self.calculator: ProfitabilityCalculator = get_calculator()
         self.flash_aggregator: FlashLoanAggregator = get_flash_loan_aggregator()
+        self.mev_protection: MEVProtection = MEVProtection(config=self.config)
 
         # Web3 providers keyed by chain_id
         self._w3_providers: Dict[int, Web3] = {}
@@ -463,7 +465,12 @@ class LiquidationExecutor:
     async def _submit_transaction(
         self, request: LiquidationRequest, w3: Web3, private_key: str
     ) -> LiquidationResult:
-        """Build, sign, and submit the liquidation transaction"""
+        """Build, sign, and submit the liquidation transaction.
+
+        When ``request.use_flashbots`` is True the signed transaction is routed
+        through Flashbots Protect (private mempool) to avoid front-running.
+        Otherwise it is sent directly to the public mempool.
+        """
         contract = self._get_contract(request.chain_id)
         if not contract:
             return self._fail(request, "Executor contract not found")
@@ -494,20 +501,38 @@ class LiquidationExecutor:
                 "nonce": w3.eth.get_transaction_count(account.address),
             })
 
-            # Sign & send
+            # Sign the transaction
             signed = w3.eth.account.sign_transaction(tx, private_key)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            raw_tx_hex = signed.raw_transaction.hex()
 
-            logger.info(f"📤 TX submitted: {tx_hash.hex()}")
+            # Route through Flashbots or public mempool
+            if request.use_flashbots:
+                route = self.mev_protection.default_route
+                logger.info(f"🛡️ Routing via {route.value} for MEV protection")
+                tx_hash_str = await self.mev_protection.send_private_transaction(
+                    signed_tx=raw_tx_hex,
+                    w3=w3,
+                    route=route,
+                )
+                if tx_hash_str is None:
+                    # Fallback to public mempool if Flashbots fails
+                    logger.warning("Flashbots routing failed — falling back to public mempool")
+                    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                    tx_hash_str = tx_hash.hex()
+                logger.info(f"📤 TX submitted via {route.value}: {tx_hash_str}")
+            else:
+                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+                tx_hash_str = tx_hash.hex()
+                logger.info(f"📤 TX submitted (public mempool): {tx_hash_str}")
 
             # Wait for receipt
             receipt = w3.eth.wait_for_transaction_receipt(
-                tx_hash,
+                tx_hash_str,
                 timeout=self.config.execution.transaction_timeout_seconds,
             )
 
             if receipt["status"] != 1:
-                return self._fail(request, "Transaction reverted", tx_hash=tx_hash.hex())
+                return self._fail(request, "Transaction reverted", tx_hash=tx_hash_str)
 
             # Parse LiquidationExecuted event
             result = self._parse_receipt(request, receipt, contract, w3)
