@@ -22,3 +22,8 @@ Thumbs.db
 
 # Temporary/downloaded files
 *.zip
+
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+*.pyo
