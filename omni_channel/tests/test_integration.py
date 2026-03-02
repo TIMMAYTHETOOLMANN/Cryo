@@ -1311,6 +1311,121 @@ class TestScalingOpportunitySurface:
 
 
 # ============================================================================
+# MAINNET DEPLOYMENT: Execution Gate + Calibration
+# ============================================================================
+
+class TestMainnetDeploymentCalibration:
+    """Validates production-safety defaults and the EXECUTION_ENABLED gate."""
+
+    def test_execution_enabled_default_is_false(self):
+        """ExecutionConfig.execution_enabled defaults to False (scan-only safe default)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        cfg = ExecutionConfig()
+        assert cfg.execution_enabled is False
+
+    def test_execution_enabled_env_override(self, monkeypatch):
+        """EXECUTION_ENABLED=true env var enables execution."""
+        import os
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        monkeypatch.setenv("EXECUTION_ENABLED", "true")
+        cfg = ExecutionConfig(
+            execution_enabled=os.getenv("EXECUTION_ENABLED", "false").lower() == "true"
+        )
+        assert cfg.execution_enabled is True
+
+    def test_execution_enabled_case_insensitive(self, monkeypatch):
+        """EXECUTION_ENABLED only accepts 'true' (any case); all other values yield False."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        # Positive cases
+        for val in ("True", "TRUE", "true"):
+            cfg = ExecutionConfig(execution_enabled=val.lower() == "true")
+            assert cfg.execution_enabled is True, f"Expected True for value {val!r}"
+        # Negative cases — any non-'true' string must produce False
+        for val in ("false", "False", "FALSE", "1", "yes", "on", "", "0"):
+            cfg = ExecutionConfig(execution_enabled=val.lower() == "true")
+            assert cfg.execution_enabled is False, f"Expected False for value {val!r}"
+
+    def test_min_profit_usd_default_is_conservative(self):
+        """min_profit_usd class default is 50.0 (matches env default)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        assert ExecutionConfig().min_profit_usd == 50.0
+
+    def test_min_profit_wei_default_is_01_eth(self):
+        """min_profit_wei class default is 0.01 ETH (10^16 wei)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        assert ExecutionConfig().min_profit_wei == 10_000_000_000_000_000
+
+    def test_min_debt_usd_default_is_1000(self):
+        """min_debt_usd class default is 1000.0 (matches env default)."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        assert ExecutionConfig().min_debt_usd == 1_000.0
+
+    @pytest.mark.asyncio
+    async def test_zrp_direct_executor_blocks_when_execution_disabled(self, monkeypatch):
+        """DirectExecutor.fire() is a no-op when EXECUTION_ENABLED is not 'true'."""
+        from unittest.mock import MagicMock
+        from profit_engine.zero_revert_pipeline import LiquidationExecutor as DirectExecutor, TrackedPosition
+
+        monkeypatch.setenv("EXECUTION_ENABLED", "false")
+
+        executor = DirectExecutor({})
+        # Give it a mock account so the private-key guard doesn't fire first
+        executor._account = MagicMock()
+        executor._account.address = "0xDeadBeef"
+
+        pos = TrackedPosition(
+            user_address="0x1234",
+            chain_id=1,
+            health_factor=0.95,
+            collateral_asset="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            debt_asset="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            pool_address="0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+            total_debt_base=int(1e21),
+            debt_usd=2500.0,
+        )
+
+        # Should return without interacting with any w3 provider
+        await executor.fire(pos)
+        # txs_fired must remain 0 — nothing was submitted
+        assert executor.txs_fired == 0
+
+    @pytest.mark.asyncio
+    async def test_zrp_direct_executor_blocks_on_gas_cap_exceeded(self, monkeypatch):
+        """DirectExecutor.fire() skips when gas price exceeds GAS_PRICE_CAP_GWEI."""
+        from unittest.mock import MagicMock, patch
+        from profit_engine.zero_revert_pipeline import LiquidationExecutor as DirectExecutor, TrackedPosition
+
+        monkeypatch.setenv("EXECUTION_ENABLED", "true")
+        monkeypatch.setenv("GAS_PRICE_CAP_GWEI", "30")
+        monkeypatch.setenv("PRIVATE_KEY", "0x" + "aa" * 32)
+
+        # Mock w3 that returns 100 gwei gas price (> 30 gwei cap)
+        mock_w3 = MagicMock()
+        mock_w3.eth.gas_price = int(100e9)  # 100 gwei
+        mock_w3.eth.contract.return_value = MagicMock()
+        mock_w3.eth.get_transaction_count.return_value = 0
+
+        executor = DirectExecutor({1: mock_w3})
+        executor._account = MagicMock()
+        executor._account.address = "0xDeadBeef"
+        executor._private_key = "0x" + "aa" * 32
+
+        pos = TrackedPosition(
+            user_address="0x1234",
+            chain_id=1,
+            health_factor=0.95,
+            collateral_asset="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+            debt_asset="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            pool_address="0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+            total_debt_base=int(1e21),
+            debt_usd=2500.0,
+        )
+
+        await executor.fire(pos)
+        assert executor.txs_fired == 0  # blocked by gas cap
+
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 

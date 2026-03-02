@@ -73,17 +73,24 @@ class DatabaseConfig:
 
 @dataclass
 class ExecutionConfig:
-    min_profit_usd: float = 2.0
-    min_profit_wei: int = 800_000_000_000_000
+    # Align class defaults with the env-var defaults so direct instantiation
+    # (e.g. in unit tests) produces the same conservative thresholds as a
+    # production run loaded from environment variables.
+    min_profit_usd: float = 50.0             # env: MIN_PROFIT_USD (default 50)
+    min_profit_wei: int = 10_000_000_000_000_000  # 0.01 ETH; env: MIN_PROFIT_WEI
     gas_price_cap_gwei: float = 50.0
     gas_limit_buffer: float = 1.2
     max_gas_limit: int = 1_000_000
     scan_interval_seconds: int = 3
     health_factor_threshold: float = 1.05
-    min_debt_usd: float = 100.0
+    min_debt_usd: float = 1_000.0            # env: MIN_DEBT_USD (default 1000)
     transaction_timeout_seconds: int = 120
     # Maximum number of positions to push into the active watchlist (ranked by HF, lowest first)
     max_watchlist_size: int = 500
+    # Safety gate — must be explicitly set to True (via EXECUTION_ENABLED=true) to
+    # submit live transactions.  When False, the executor logs the opportunity and
+    # returns without broadcasting, acting as a dry-run / scan-only mode.
+    execution_enabled: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +273,7 @@ class ConfigManager:
             min_debt_usd=float(os.getenv("MIN_DEBT_USD", "1000")),
             transaction_timeout_seconds=int(os.getenv("TRANSACTION_TIMEOUT_SECONDS", "120")),
             max_watchlist_size=int(os.getenv("MAX_WATCHLIST_SIZE", "500")),
+            execution_enabled=os.getenv("EXECUTION_ENABLED", "false").lower() == "true",
         )
 
     @property

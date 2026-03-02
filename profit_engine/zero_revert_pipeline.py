@@ -646,8 +646,20 @@ class LiquidationExecutor:
                 pass
 
     async def fire(self, pos: TrackedPosition):
-        """Build, sign, broadcast liquidationCall.  No gates.  No simulation."""
+        """Build, sign, broadcast liquidationCall.
+
+        Submission is gated by two explicit mainnet-safety checks:
+        1. ``EXECUTION_ENABLED=true`` must be set in the environment.
+        2. The current gas price must not exceed ``GAS_PRICE_CAP_GWEI``.
+        """
         if not self._account:
+            return
+
+        if os.getenv('EXECUTION_ENABLED', 'false').lower() != 'true':
+            print(
+                f"   🔒 EXECUTION_ENABLED=false — opportunity logged but not submitted "
+                f"(HF={pos.health_factor:.4f} debt=${pos.debt_usd:,.0f})"
+            )
             return
 
         w3 = self._w3.get(pos.chain_id)
@@ -673,6 +685,15 @@ class LiquidationExecutor:
 
             nonce = w3.eth.get_transaction_count(self._account.address, 'pending')
             gas_price = w3.eth.gas_price
+
+            # Gas-price cap — skip if network is congested beyond our threshold
+            gas_price_gwei = gas_price / 1e9
+            gas_cap_gwei = float(os.getenv('GAS_PRICE_CAP_GWEI', '50'))
+            if gas_price_gwei > gas_cap_gwei:
+                print(
+                    f"   ⛽ Gas too high: {gas_price_gwei:.1f} gwei > cap {gas_cap_gwei:.1f} gwei — skipping"
+                )
+                return
 
             tx = pool.functions.liquidationCall(
                 Web3.to_checksum_address(pos.collateral_asset),

@@ -308,6 +308,17 @@ class LiquidationExecutor:
         if not private_key:
             return self._fail(request, "No PRIVATE_KEY configured — scan-only mode")
 
+        # ---- Execution safety gate ----
+        # EXECUTION_ENABLED must be explicitly set to true in the environment to
+        # submit live transactions.  This prevents accidental mainnet execution
+        # during testing or misconfigured deployments.
+        if not self.config.execution.execution_enabled:
+            logger.info(
+                "🔒 EXECUTION_ENABLED=false — opportunity detected but transaction "
+                "not submitted.  Set EXECUTION_ENABLED=true to enable live execution."
+            )
+            return self._fail(request, "EXECUTION_ENABLED=false — scan-only mode")
+
         # ---- 1. Profitability pre-flight ----
         profitability = await self._check_profitability(request, w3)
         if not profitability.is_profitable:
