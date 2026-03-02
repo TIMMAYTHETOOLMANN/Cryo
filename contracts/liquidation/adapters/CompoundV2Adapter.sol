@@ -49,6 +49,12 @@ contract CompoundV2LiquidationAdapter is ILiquidationAdapter {
         address user,
         uint256 debtAmount
     ) external override returns (uint256 collateralSeized) {
+        // Pull the underlying debt tokens from the caller (executor)
+        require(
+            IERC20(debtAsset).transferFrom(msg.sender, address(this), debtAmount),
+            "Debt transferFrom failed"
+        );
+
         // Approve the debt cToken to pull the underlying repayment amount
         IERC20(debtAsset).approve(address(DEBT_CTOKEN), debtAmount);
 

@@ -12,7 +12,7 @@ fi
 SCAN_INTERVAL="${SCAN_INTERVAL:-300}"
 VERBOSITY="${VERBOSITY:--vvv}"
 BROADCAST_FLAG=""
-if [ -n "${PRIVATE_KEY:-}" ]; then
+if [ -n "${PRIVATE_KEY:-}" ] && [ "${EXECUTION_ENABLED:-false}" = "true" ]; then
     BROADCAST_FLAG="--private-key ${PRIVATE_KEY} --broadcast"
 fi
 

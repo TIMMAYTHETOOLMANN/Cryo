@@ -149,8 +149,10 @@ contract LiquidationExecutorV3 {
         supportedDebtAssets[asset] = false;
     }
 
-    function setMinProfit(uint256 _minProfit) external onlyOwner {
-        minProfit = _minProfit;
+    /// @notice Deprecated: minProfit is currently not enforced in liquidation logic.
+    /// This function now always reverts to avoid a false sense of safety.
+    function setMinProfit(uint256 /* _minProfit */) external onlyOwner {
+        revert("minProfit disabled");
     }
 
     function setTWAPOracle(address oracle) external onlyOwner {
@@ -302,8 +304,10 @@ contract LiquidationExecutorV3 {
         IERC20V3(asset).approve(msg.sender, amountOwed);
 
         // Module 4 #2: gas-optimized sweeps to treasury
+        // Only sweep the *excess* of the flash-loaned asset — the provider
+        // will transferFrom(address(this)) the owed amount after this callback.
         address treasury_ = TREASURY;
-        _sweepTo(asset, treasury_);
+        _sweepExcess(asset, treasury_, amountOwed);
         for (uint256 i = 0; i < n; ) {
             address coll = targets[i].collateralAsset;
             if (coll != asset) _sweepTo(coll, treasury_);
@@ -346,6 +350,29 @@ contract LiquidationExecutorV3 {
     function _checkTWAP(address asset) internal view {
         uint256 price = ITWAPOracle(twapOracle).getTWAP(asset);
         require(price > 0, "TWAP: stale price");
+    }
+
+    /// @dev Sweep only the excess balance beyond `reserved` to `to`.
+    ///      Used for the flash-loaned asset so the provider can still pull repayment.
+    function _sweepExcess(address token, address to, uint256 reserved) internal {
+        uint256 bal;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr,       0x70a0823100000000000000000000000000000000000000000000000000000000)
+            mstore(add(ptr, 4), address())
+            if staticcall(gas(), token, ptr, 36, ptr, 32) {
+                bal := mload(ptr)
+            }
+        }
+        if (bal <= reserved) return;
+        uint256 excess = bal - reserved;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr,        0xa9059cbb00000000000000000000000000000000000000000000000000000000)
+            mstore(add(ptr, 4),  to)
+            mstore(add(ptr, 36), excess)
+            if iszero(call(gas(), token, 0, ptr, 68, ptr, 32)) { revert(0, 0) }
+        }
     }
 
     /// @dev Module 4 #2: gas-optimized ERC-20 balance sweep using inline assembly.

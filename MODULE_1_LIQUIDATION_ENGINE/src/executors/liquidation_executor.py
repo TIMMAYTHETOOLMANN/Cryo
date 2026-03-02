@@ -35,6 +35,7 @@ from ..calculators.profitability_calculator import (
     ProfitabilityResult,
     get_calculator,
 )
+from ..mev_protection.flashbots import MEVProtection, MEVRoute
 
 logger = logging.getLogger(__name__)
 
@@ -207,6 +208,7 @@ class LiquidationExecutor:
         self.config = config or get_config()
         self.calculator: ProfitabilityCalculator = get_calculator()
         self.flash_aggregator: FlashLoanAggregator = get_flash_loan_aggregator()
+        self.mev_protection: MEVProtection = MEVProtection(config=self.config)
 
         # Web3 providers keyed by chain_id
         self._w3_providers: Dict[int, Web3] = {}
@@ -335,16 +337,14 @@ class LiquidationExecutor:
         # ---- 2. Select flash loan provider (adaptive: uses success history) ----
         selected_provider: Optional[FlashLoanProviderType] = request.flash_loan_provider
         if selected_provider is None:
-            quote = await self.flash_aggregator.get_best_quote(
-                chain_id=chain_id,
+            quote = self.flash_aggregator.best_quote(
                 asset=request.debt_asset,
                 amount=request.debt_amount,
-                recipient=self._executor_addresses.get("v2", ""),
             )
             if not quote:
                 return self._fail(request, "No flash loan provider available")
             selected_provider = quote.provider
-            logger.info(f"⚡ Best provider: {quote.provider.value} (fee {quote.fee_percentage*100:.3f}%)")
+            logger.info(f"⚡ Best provider: {quote.provider.value} (fee {quote.fee_bps:.2f} bps)")
         else:
             logger.info(f"⚡ Using requested provider: {request.flash_loan_provider.value}")
 
@@ -465,7 +465,12 @@ class LiquidationExecutor:
     async def _submit_transaction(
         self, request: LiquidationRequest, w3: Web3, private_key: str
     ) -> LiquidationResult:
-        """Build, sign, and submit the liquidation transaction"""
+        """Build, sign, and submit the liquidation transaction.
+
+        When ``request.use_flashbots`` is True the signed transaction is routed
+        through Flashbots Protect (private mempool) to avoid front-running.
+        Otherwise it is sent directly to the public mempool.
+        """
         contract = self._get_contract(request.chain_id)
         if not contract:
             return self._fail(request, "Executor contract not found")
@@ -496,20 +501,40 @@ class LiquidationExecutor:
                 "nonce": w3.eth.get_transaction_count(account.address),
             })
 
-            # Sign & send
+            # Sign the transaction
             signed = w3.eth.account.sign_transaction(tx, private_key)
-            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            raw_tx_hex = signed.raw_transaction.hex()
 
-            logger.info(f"📤 TX submitted: {tx_hash.hex()}")
+            # Route through Flashbots or public mempool
+            if request.use_flashbots:
+                route = self.mev_protection.default_route
+                logger.info(f"🛡️ Routing via {route.value} for MEV protection")
+                fb_result = await self.mev_protection.send_private_transaction(
+                    signed_tx=raw_tx_hex,
+                    w3=w3,
+                    route=route,
+                )
+                if fb_result is None:
+                    # Fallback to public mempool if Flashbots fails
+                    logger.warning("Flashbots routing failed — falling back to public mempool")
+                    tx_hash_bytes = w3.eth.send_raw_transaction(signed.raw_transaction)
+                else:
+                    tx_hash_bytes = fb_result if isinstance(fb_result, bytes) else bytes.fromhex(fb_result.replace("0x", ""))
+                tx_hash_str = tx_hash_bytes.hex() if isinstance(tx_hash_bytes, bytes) else str(tx_hash_bytes)
+                logger.info(f"📤 TX submitted via {route.value}: {tx_hash_str}")
+            else:
+                tx_hash_bytes = w3.eth.send_raw_transaction(signed.raw_transaction)
+                tx_hash_str = tx_hash_bytes.hex()
+                logger.info(f"📤 TX submitted (public mempool): {tx_hash_str}")
 
-            # Wait for receipt
+            # Wait for receipt (pass bytes hash for reliability)
             receipt = w3.eth.wait_for_transaction_receipt(
-                tx_hash,
+                tx_hash_bytes,
                 timeout=self.config.execution.transaction_timeout_seconds,
             )
 
             if receipt["status"] != 1:
-                return self._fail(request, "Transaction reverted", tx_hash=tx_hash.hex())
+                return self._fail(request, "Transaction reverted", tx_hash=tx_hash_str)
 
             # Parse LiquidationExecuted event
             result = self._parse_receipt(request, receipt, contract, w3)

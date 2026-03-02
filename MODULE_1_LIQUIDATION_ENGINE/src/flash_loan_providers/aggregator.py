@@ -143,20 +143,32 @@ _MAKER_DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 # TOKEN DECIMAL CONSTANTS
 # ============================================================================
 
-# Well-known 18-decimal token addresses (lowercase)
+# Well-known token decimal mappings (address lowercase → decimals unit)
 _DECIMALS_18_TOKENS = {
     "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",   # WETH
-    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",   # WBTC (8 dec – handled in 6-dec set below)
+    "0x6b175474e89094c44da98b954eedeac495271d0f",   # DAI (18 decimals)
+}
+
+# Well-known 8-decimal token addresses (lowercase)
+_DECIMALS_8_TOKENS = {
+    "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",   # WBTC (8 decimals)
 }
 
 # Well-known 6-decimal token addresses (lowercase)
 _DECIMALS_6_TOKENS = {
     "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",   # USDC
     "0xdac17f958d2ee523a2206206994597c13d831ec7",   # USDT
-    "0x6b175474e89094c44da98b954eedeac495271d0f",   # DAI (18 dec but treat as stablecoin)
+}
+
+# Stablecoins whose value is ~$1 (used for USD conversion, separate from decimals)
+_STABLECOINS = {
+    "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",   # USDC
+    "0xdac17f958d2ee523a2206206994597c13d831ec7",   # USDT
+    "0x6b175474e89094c44da98b954eedeac495271d0f",   # DAI
 }
 
 _DECIMALS_18 = int(1e18)
+_DECIMALS_8  = int(1e8)
 _DECIMALS_6  = int(1e6)
 
 
@@ -165,7 +177,14 @@ def _token_decimals(asset_address: str) -> int:
     addr = asset_address.lower()
     if addr in _DECIMALS_6_TOKENS:
         return _DECIMALS_6
+    if addr in _DECIMALS_8_TOKENS:
+        return _DECIMALS_8
     return _DECIMALS_18
+
+
+def _is_stablecoin(asset_address: str) -> bool:
+    """Return True if the asset is a known stablecoin (~$1)."""
+    return asset_address.lower() in _STABLECOINS
 
 
 
@@ -187,9 +206,13 @@ class _BaseProvider:
     def quote(self, asset: str, amount: int, eth_price_usd: float = 2500.0) -> FlashLoanQuote:
         fee_wei  = int(amount * self.fee_rate)
         decimals = _token_decimals(asset)
-        # Convert fee_wei to USD using eth_price_usd for 18-dec tokens, 1:1 for stablecoins
-        if decimals == _DECIMALS_6:
-            fee_usd = fee_wei / _DECIMALS_6       # USDC/USDT: 1 token = ~$1
+        # Convert fee_wei to USD: stablecoins use 1:1, others use eth_price_usd
+        if _is_stablecoin(asset):
+            fee_usd = fee_wei / decimals       # Stablecoin: 1 token = ~$1
+        elif decimals == _DECIMALS_8:
+            # 8-decimal tokens (e.g. WBTC) — uses eth_price_usd as a proxy;
+            # for accurate pricing a dedicated oracle should be used.
+            fee_usd = (fee_wei / _DECIMALS_8) * eth_price_usd
         else:
             fee_usd = (fee_wei / _DECIMALS_18) * eth_price_usd
         return FlashLoanQuote(
