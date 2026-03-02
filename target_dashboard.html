@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎯 Cryo1 Target Acquisition Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 2px solid #00d9ff;
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #00d9ff, #00ff88);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .subtitle {
+            color: #888;
+            font-size: 1.1em;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            transition: transform 0.3s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            border-color: #00d9ff;
+        }
+        
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #00d9ff;
+            margin-bottom: 5px;
+        }
+        
+        .stat-label {
+            color: #888;
+            font-size: 0.9em;
+        }
+        
+        .opportunities-section {
+            margin-bottom: 30px;
+        }
+        
+        .section-title {
+            font-size: 1.5em;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .opportunity-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+            display: grid;
+            grid-template-columns: 1fr auto auto auto;
+            gap: 20px;
+            align-items: center;
+            transition: all 0.3s;
+        }
+        
+        .opportunity-card:hover {
+            border-color: #00ff88;
+            background: rgba(0, 255, 136, 0.05);
+        }
+        
+        .opp-type {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .opp-type-name {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        
+        .opp-protocol {
+            color: #888;
+            font-size: 0.9em;
+        }
+        
+        .opp-profit {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #00ff88;
+        }
+        
+        .opp-urgency {
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: bold;
+        }
+        
+        .urgency-high {
+            background: rgba(255, 71, 87, 0.2);
+            color: #ff4757;
+        }
+        
+        .urgency-medium {
+            background: rgba(255, 165, 2, 0.2);
+            color: #ffa502;
+        }
+        
+        .urgency-low {
+            background: rgba(0, 217, 255, 0.2);
+            color: #00d9ff;
+        }
+        
+        .opp-action {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s;
+        }
+        
+        .btn-execute {
+            background: linear-gradient(90deg, #00d9ff, #00ff88);
+            color: #000;
+        }
+        
+        .btn-execute:hover {
+            transform: scale(1.05);
+        }
+        
+        .btn-details {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+        
+        .btn-details:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .treasury-section {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .treasury-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .treasury-balance {
+            font-size: 2em;
+            font-weight: bold;
+            color: #00d9ff;
+        }
+        
+        .scan-controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .btn-scan {
+            padding: 15px 30px;
+            font-size: 1.1em;
+            background: linear-gradient(90deg, #00d9ff, #00ff88);
+            color: #000;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        
+        .btn-scan:hover {
+            transform: scale(1.05);
+        }
+        
+        .last-scan {
+            color: #888;
+            font-size: 0.9em;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+        
+        .spinner {
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top: 3px solid #00d9ff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .no-opportunities {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+        
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-btn {
+            padding: 8px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: transparent;
+            color: #fff;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .filter-btn.active,
+        .filter-btn:hover {
+            background: rgba(0, 217, 255, 0.2);
+            border-color: #00d9ff;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎯 Cryo1 Target Acquisition Dashboard</h1>
+            <p class="subtitle">Real-time DeFi opportunity discovery and execution</p>
+        </header>
+        
+        <!-- Treasury Section -->
+        <div class="treasury-section">
+            <div class="treasury-info">
+                <div>
+                    <h2>💼 Treasury</h2>
+                    <p style="color: #888; margin-top: 5px;">0xB323C6E32C6efe28FB9cfB1A83F4071c544eA1e4</p>
+                </div>
+                <div class="treasury-balance" id="treasuryBalance">Loading...</div>
+            </div>
+        </div>
+        
+        <!-- Stats Grid -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="totalOpps">0</div>
+                <div class="stat-label">Total Opportunities</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="liquidations">0</div>
+                <div class="stat-label">Liquidations</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="arbOpps">0</div>
+                <div class="stat-label">Arbitrage</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="totalProfit">$0</div>
+                <div class="stat-label">Total Potential Profit</div>
+            </div>
+        </div>
+        
+        <!-- Scan Controls -->
+        <div class="scan-controls">
+            <button class="btn-scan" onclick="runScan()">🔍 Run Quick Scan</button>
+            <button class="btn-scan" onclick="toggleAutoScan()" id="autoScanBtn">⏱️ Auto-Scan: OFF</button>
+            <span class="last-scan" id="lastScan">Last scan: Never</span>
+        </div>
+        
+        <!-- Filter Buttons -->
+        <div class="filter-buttons">
+            <button class="filter-btn active" onclick="filterOpps('all')">All</button>
+            <button class="filter-btn" onclick="filterOpps('liquidation')">Liquidations</button>
+            <button class="filter-btn" onclick="filterOpps('arb')">Arbitrage</button>
+            <button class="filter-btn" onclick="filterOpps('reserve')">Reserve Protocol</button>
+            <button class="filter-btn" onclick="filterOpps('dex')">DEX</button>
+        </div>
+        
+        <!-- Opportunities Section -->
+        <div class="opportunities-section">
+            <h2 class="section-title">🎯 Discovered Opportunities</h2>
+            <div id="opportunitiesList">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Waiting for scan...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let opportunities = [];
+        let autoScanInterval = null;
+        let currentFilter = 'all';
+        
+        // Load initial data
+        async function loadData() {
+            try {
+                const response = await fetch('quick_scan_results.json?t=' + Date.now());
+                if (response.ok) {
+                    const data = await response.json();
+                    updateDashboard(data);
+                }
+            } catch (e) {
+                console.log('Waiting for scan data...');
+            }
+        }
+        
+        // Update dashboard with new data
+        function updateDashboard(data) {
+            // Update treasury
+            if (data.treasury && data.treasury.balance_usd) {
+                document.getElementById('treasuryBalance').textContent = 
+                    `$${data.treasury.balance_usd.toLocaleString()}`;
+            }
+            
+            // Update opportunities
+            opportunities = data.opportunities || [];
+            updateStats();
+            renderOpportunities();
+            
+            // Update last scan time
+            document.getElementById('lastScan').textContent = 
+                `Last scan: ${new Date(data.scan_time).toLocaleString()}`;
+        }
+        
+        // Update statistics
+        function updateStats() {
+            const total = opportunities.length;
+            const liqs = opportunities.filter(o => o.type === 'liquidation').length;
+            const arbs = opportunities.filter(o => o.type.includes('arb')).length;
+            const totalProfit = opportunities.reduce((sum, o) => sum + o.profit_usd, 0);
+            
+            document.getElementById('totalOpps').textContent = total;
+            document.getElementById('liquidations').textContent = liqs;
+            document.getElementById('arbOpps').textContent = arbs;
+            document.getElementById('totalProfit').textContent = 
+                `$${totalProfit.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+        }
+        
+        // Render opportunities list
+        function renderOpportunities() {
+            const container = document.getElementById('opportunitiesList');
+            
+            let filtered = opportunities;
+            if (currentFilter !== 'all') {
+                if (currentFilter === 'liquidation') {
+                    filtered = opportunities.filter(o => o.type === 'liquidation');
+                } else if (currentFilter === 'arb') {
+                    filtered = opportunities.filter(o => o.type.includes('arb') && !o.type.includes('reserve'));
+                } else if (currentFilter === 'reserve') {
+                    filtered = opportunities.filter(o => o.type === 'reserve_arb');
+                } else if (currentFilter === 'dex') {
+                    filtered = opportunities.filter(o => o.type === 'dex_arb');
+                }
+            }
+            
+            if (filtered.length === 0) {
+                container.innerHTML = `
+                    <div class="no-opportunities">
+                        <p>No opportunities found${currentFilter !== 'all' ? ` for ${currentFilter}` : ''}</p>
+                        <p style="margin-top: 10px;">Run a scan to discover opportunities</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            // Sort by profit
+            filtered.sort((a, b) => b.profit_usd - a.profit_usd);
+            
+            container.innerHTML = filtered.map((opp, index) => `
+                <div class="opportunity-card">
+                    <div class="opp-type">
+                        <span class="opp-type-name">${formatType(opp.type)}</span>
+                        <span class="opp-protocol">${opp.protocol}</span>
+                    </div>
+                    <div class="opp-profit">$${opp.profit_usd.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+                    <div class="opp-urgency urgency-${opp.urgency.toLowerCase()}">${opp.urgency}</div>
+                    <div class="opp-action">
+                        <button class="btn btn-details" onclick="showDetails(${index})">Details</button>
+                        <button class="btn btn-execute" onclick="executeOpp(${index})">Execute</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        // Format opportunity type
+        function formatType(type) {
+            const formats = {
+                'liquidation': '💧 Liquidation',
+                'cross_chain_arb': '🌉 Cross-Chain Arb',
+                'reserve_arb': '💎 Reserve Arb',
+                'dex_arb': '🦄 DEX Arb',
+            };
+            return formats[type] || type;
+        }
+        
+        // Filter opportunities
+        function filterOpps(filter) {
+            currentFilter = filter;
+            
+            // Update active button
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            renderOpportunities();
+        }
+        
+        // Run scan
+        async function runScan() {
+            const container = document.getElementById('opportunitiesList');
+            container.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Scanning for opportunities...</p>
+                </div>
+            `;
+            
+            try {
+                const response = await fetch('quick_scan_results.json?t=' + Date.now());
+                if (response.ok) {
+                    const data = await response.json();
+                    updateDashboard(data);
+                } else {
+                    container.innerHTML = '<div class="no-opportunities"><p>Scan failed. Please try again.</p></div>';
+                }
+            } catch (e) {
+                container.innerHTML = '<div class="no-opportunities"><p>Error running scan.</p></div>';
+            }
+        }
+        
+        // Toggle auto-scan
+        function toggleAutoScan() {
+            const btn = document.getElementById('autoScanBtn');
+            
+            if (autoScanInterval) {
+                clearInterval(autoScanInterval);
+                autoScanInterval = null;
+                btn.textContent = '⏱️ Auto-Scan: OFF';
+                btn.style.background = 'transparent';
+            } else {
+                autoScanInterval = setInterval(runScan, 30000); // 30 seconds
+                btn.textContent = '⏱️ Auto-Scan: ON (30s)';
+                btn.style.background = 'rgba(0, 255, 136, 0.2)';
+                runScan(); // Run immediately
+            }
+        }
+        
+        // Show opportunity details
+        function showDetails(index) {
+            const opp = opportunities[index];
+            alert(JSON.stringify(opp, null, 2));
+        }
+        
+        // Execute opportunity
+        function executeOpp(index) {
+            const opp = opportunities[index];
+            alert(`Execute ${opp.type} - $${opp.profit_usd}?\n\nIn production, this would trigger the execution bridge.`);
+        }
+        
+        // Initial load
+        loadData();
+        
+        // Auto-refresh every 10 seconds
+        setInterval(loadData, 10000);
+    </script>
+</body>
+</html>

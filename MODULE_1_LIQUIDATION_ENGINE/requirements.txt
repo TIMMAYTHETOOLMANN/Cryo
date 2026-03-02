@@ -1,0 +1,72 @@
+# ============================================================================
+# MODULE 1: FLASH LOAN LIQUIDATION ENGINE - PYTHON DEPENDENCIES
+# ============================================================================
+# Install with: pip install -r requirements.txt
+# ============================================================================
+
+# ============================================================================
+# CORE WEB3 & BLOCKCHAIN
+# ============================================================================
+web3>=7.0.0           # Ethereum interaction library
+eth-abi>=5.0.0        # ABI encoding/decoding
+eth-utils>=5.0.0      # Ethereum utility functions
+eth-typing>=5.0.0     # Type hints for Ethereum
+eth-account>=0.13.0   # Ethereum account management
+hexbytes>=1.0.0       # Hex bytes utility
+
+# ============================================================================
+# ASYNC & NETWORKING
+# ============================================================================
+aiohttp>=3.11.0       # Async HTTP client/server
+websockets>=14.0      # WebSocket support for real-time data
+aioredis>=2.0.1       # Async Redis client (caching)
+asyncpg>=0.30.0       # Async PostgreSQL client (TimescaleDB)
+
+# ============================================================================
+# DATABASE - TIMESCALEDB
+# ============================================================================
+# TimescaleDB server should be installed separately via Docker
+# See docker/timescale.yml for deployment
+
+# ============================================================================
+# DATA PROCESSING
+# ============================================================================
+numpy>=2.0.0          # Numerical computing
+pandas>=2.2.0         # Data manipulation and analysis
+python-dotenv>=1.0.0  # Environment variable management
+
+# ============================================================================
+# MACHINE LEARNING (For ML Aggregator Module)
+# ============================================================================
+scikit-learn>=1.6.0   # ML models for quality scoring
+joblib>=1.4.0         # Model serialization
+
+# ============================================================================
+# MONITORING & LOGGING
+# ============================================================================
+prometheus-client>=0.21.0  # Metrics export
+structlog>=24.4.0          # Structured logging
+
+# ============================================================================
+# TESTING (Development)
+# ============================================================================
+pytest>=8.0.0         # Testing framework
+pytest-asyncio>=0.24.0 # Async test support
+pytest-cov>=6.0.0     # Coverage reporting
+
+# ============================================================================
+# TYPE CHECKING (Development)
+# ============================================================================
+mypy>=1.14.0          # Static type checking
+types-aiohttp         # Type stubs for aiohttp
+
+# ============================================================================
+# UTILITY
+# ============================================================================
+pycryptodome>=3.21.0  # Cryptographic operations
+requests>=2.32.0      # HTTP library (sync fallback)
+
+# ============================================================================
+# DEPLOYMENT
+# ============================================================================
+docker>=7.0.0         # Docker SDK for Python

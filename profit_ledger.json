@@ -1,0 +1,20 @@
+{
+  "current_phase": "phase_1_cold_start",
+  "start_time": 1772385559.3048956,
+  "cumulative_profit_usd": 0.0,
+  "cumulative_gross_usd": 0.0,
+  "cumulative_gas_usd": 0.0,
+  "cumulative_fees_usd": 0.0,
+  "total_transactions": 81,
+  "successful_transactions": 0,
+  "failed_transactions": 81,
+  "capital_base_usd": 0.0,
+  "profit_reserve_usd": 0.0,
+  "profit_by_type": {
+    "unknown": 0.0
+  },
+  "count_by_type": {
+    "unknown": 81
+  },
+  "last_updated": 1772420729.11115
+}

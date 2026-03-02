@@ -38,6 +38,20 @@ interface IRToken {
 interface IMain {
     /// @notice Returns the basket handler address
     function basketHandler() external view returns (address);
+
+    /// @notice Returns the asset registry address
+    function assetRegistry() external view returns (address);
+
+    /// @notice Returns the backing manager address
+    function backingManager() external view returns (address);
+}
+
+/// @title IAssetRegistry
+/// @notice Interface for Reserve Protocol Asset Registry
+/// @dev Tracks all assets registered for an RToken deployment
+interface IAssetRegistry {
+    /// @notice Returns the addresses of all registered assets
+    function erc20s() external view returns (address[] memory);
 }
 
 /// @title IBasketHandler
@@ -53,6 +67,19 @@ interface IBasketHandler {
         external
         view
         returns (address[] memory tokens, uint256[] memory amounts);
+
+    /// @notice Returns the status of the basket backing
+    /// @return status 0 = SOUND, 1 = DANGER, 2 = DISABLED
+    function status() external view returns (uint8);
+}
+
+/// @title IBackingManager
+/// @notice Interface for Reserve Protocol Backing Manager
+/// @dev Manages RToken backing and auctions
+interface IBackingManager {
+    /// @notice Returns the current backing status
+    /// @return status 0 = SOUND, 1 = DANGER, 2 = DISABLED
+    function status() external view returns (uint8);
 }
 
 /// @title IERC20
@@ -88,4 +115,20 @@ interface ISwapRouter {
         external
         payable
         returns (uint256 amountOut);
+
+    struct ExactOutputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 deadline;
+        uint256 amountOut;
+        uint256 amountInMaximum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    function exactOutputSingle(ExactOutputSingleParams calldata params)
+        external
+        payable
+        returns (uint256 amountIn);
 }

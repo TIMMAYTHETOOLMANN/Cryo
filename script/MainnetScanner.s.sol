@@ -36,9 +36,15 @@ contract MainnetScanner is Script {
     uint256 constant SLIPPAGE_TOLERANCE_BPS = 500;     // 5% slippage tolerance on DEX swaps
     uint256 constant SWAP_DEADLINE_SECONDS = 300;      // 5 minute deadline for swaps
 
+    // --- Flash Loan Arbitrage Executor ---
+    address public flashExecutor;
+
     // --- Configurable Thresholds ---
     uint256 public minProfitWei;
     uint256 public gasPriceCapGwei;
+
+    address[] public rTokens;
+    mapping(address => bool) public isDiscovered;
 
     CollateralizationDetector public detector;
 
@@ -46,6 +52,7 @@ contract MainnetScanner is Script {
         // --- Load Configuration ---
         minProfitWei    = vm.envOr("MIN_PROFIT_WEI", uint256(10000000000000000)); // 0.01 ETH default
         gasPriceCapGwei = vm.envOr("GAS_PRICE_CAP_GWEI", uint256(50));
+        flashExecutor   = vm.envOr("FLASH_EXECUTOR", address(0));
 
         // --- Deploy detector for analysis ---
         detector = new CollateralizationDetector();
@@ -59,18 +66,36 @@ contract MainnetScanner is Script {
 
         // --- Phase 1: Reconnaissance (scan all known RTokens) ---
         console.log("=== Phase 1: Reserve Protocol Reconnaissance ===");
-        _scanRToken("ETH+", ETH_PLUS);
-        _scanRToken("eUSD", E_USD);
+        
+        // Initial seeds
+        _addRToken(ETH_PLUS);
+        _addRToken(E_USD);
+        _addRToken(0xac3E018457B222d93114458476f3E3416Abbe38F); // sfrxETH
+        _addRToken(0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0); // wstETH
+        _addRToken(0xae78736Cd615f374D3085123A210448E74Fc6393); // rETH
+
+        // Adaptive discovery
+        // _discoverMore();
+
+        for (uint256 i = 0; i < rTokens.length; i++) {
+            _scanRToken("RToken", rTokens[i]);
+        }
         console.log("");
 
         // --- Phase 2: Profitability Analysis ---
         console.log("=== Phase 2: Profitability Analysis ===");
-        bool ethPlusOpportunity = _analyzeProfitability("ETH+", ETH_PLUS, 1800e18);
-        bool eUsdOpportunity = _analyzeProfitability("eUSD", E_USD, 1e18);
+        bool[] memory opportunities = new bool[](rTokens.length);
+        bool anyOpportunity = false;
+
+        for (uint256 i = 0; i < rTokens.length; i++) {
+            // Use generic price of 1.0 for discovery, actual production should use oracles
+            opportunities[i] = _analyzeProfitability("RToken", rTokens[i], 1e18);
+            if (opportunities[i]) anyOpportunity = true;
+        }
         console.log("");
 
         // --- Phase 3: Execution (only if profitable and private key is available) ---
-        if (ethPlusOpportunity || eUsdOpportunity) {
+        if (anyOpportunity) {
             console.log("=== Phase 3: Execution ===");
 
             // Check if we have a private key for broadcast
@@ -78,11 +103,10 @@ contract MainnetScanner is Script {
                 address executor = vm.addr(deployerKey);
                 console.log("Executor address:", executor);
 
-                if (ethPlusOpportunity) {
-                    _executeArbitrage(ETH_PLUS, deployerKey, executor);
-                }
-                if (eUsdOpportunity) {
-                    _executeArbitrage(E_USD, deployerKey, executor);
+                for (uint256 i = 0; i < rTokens.length; i++) {
+                    if (opportunities[i]) {
+                        _executeArbitrage(rTokens[i], deployerKey, executor);
+                    }
                 }
             } catch {
                 console.log("No PRIVATE_KEY set - scan-only mode. Skipping execution.");
@@ -95,14 +119,49 @@ contract MainnetScanner is Script {
         console.log("=== Scan Complete ===");
     }
 
+    function _addRToken(address rToken) internal {
+        if (rToken != address(0) && !isDiscovered[rToken]) {
+            rTokens.push(rToken);
+            isDiscovered[rToken] = true;
+        }
+    }
+
+    function _discoverMore() internal {
+        console.log("  Running adaptive discovery...");
+        uint256 initialCount = rTokens.length;
+        
+        // Dynamic discovery from known seeds
+        for (uint256 i = 0; i < initialCount; i++) {
+            address[] memory discovered = detector.discoverRTokens(rTokens[i], 3); // Deeper discovery
+            for (uint256 j = 0; j < discovered.length; j++) {
+                _addRToken(discovered[j]);
+            }
+        }
+        
+        if (rTokens.length > initialCount) {
+            console.log("    Discovered", rTokens.length - initialCount, "new RTokens.");
+        } else {
+            console.log("    No new RTokens discovered.");
+        }
+    }
+
     /// @notice Scans an RToken for over-collateralization status
     function _scanRToken(string memory name, address rToken) internal view {
         CollateralizationDetector.RTokenPositionData memory data = detector.getRTokenPosition(rToken);
+        CollateralizationDetector.RTokenConfiguration memory config = detector.getRTokenConfiguration(rToken);
 
         console.log("---", name, "---");
         console.log("  Address:", rToken);
         console.log("  Total Supply:", data.totalSupply / 1e18, "tokens");
         console.log("  Baskets Needed:", data.basketsNeeded / 1e18, "baskets");
+
+        if (config.isAdaptiveReconEnabled) {
+            console.log("  [ADAPTIVE RECONNAISSANCE DATA]");
+            console.log("    Main:", config.main);
+            console.log("    Basket Status:", config.basketStatus == 0 ? "SOUND" : "DANGER/DISABLED");
+            console.log("    Backing Status:", config.backingStatus == 0 ? "SOUND" : "DANGER/DISABLED");
+            console.log("    Registered Assets:", config.allRegisteredAssets.length);
+        }
 
         if (data.isOverCollateralized) {
             console.log("  [OVER-COLLATERALIZED]");
@@ -169,6 +228,21 @@ contract MainnetScanner is Script {
 
     /// @notice Executes the mint/redeem arbitrage cycle on an over-collateralized RToken
     function _executeArbitrage(address rToken, uint256 deployerKey, address executor) internal {
+        if (flashExecutor != address(0)) {
+            console.log("  Using Flash Loan Arbitrage Executor:", flashExecutor);
+            vm.startBroadcast(deployerKey);
+            // Calculate required flash loan amount (WETH)
+            // Increased to 2 ETH to be safe for collateral acquisition
+            uint256 wethNeeded = 2e18;
+
+            (bool success,) = flashExecutor.call{gas: 2000000}(
+                abi.encodeWithSignature("executeArbitrage(address,uint256)", rToken, wethNeeded)
+            );
+            require(success, "Flash loan arbitrage failed");
+            vm.stopBroadcast();
+            return;
+        }
+
         IRToken token = IRToken(rToken);
 
         // Get collateral requirements

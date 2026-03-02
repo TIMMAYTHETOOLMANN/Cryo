@@ -81,6 +81,18 @@ contract CollateralizationDetector {
         bool isOverCollateralized;     // True when basketsNeeded > totalSupply
     }
 
+    /// @notice Detailed Reserve Protocol RToken configuration
+    struct RTokenConfiguration {
+        address main;                  // Main contract address
+        address basketHandler;         // BasketHandler address
+        address assetRegistry;         // AssetRegistry address
+        address backingManager;        // BackingManager address
+        uint8 basketStatus;            // 0=SOUND, 1=DANGER, 2=DISABLED
+        uint8 backingStatus;           // 0=SOUND, 1=DANGER, 2=DISABLED
+        address[] allRegisteredAssets; // All assets tracked by the RToken
+        bool isAdaptiveReconEnabled;   // True if the system can scan this configuration
+    }
+
     /// @notice Protocol type enum for heuristic classification
     enum ProtocolType {
         Unknown,
@@ -98,6 +110,48 @@ contract CollateralizationDetector {
         BalancerV2,
         ChainlinkOracle,
         ReserveProtocol
+    }
+
+    // --- Heuristic Protocol Classification ---
+
+    /// @notice Attempts to classify an unknown contract by probing known DeFi selectors
+    /// @dev Tries calling known view functions and catches reverts
+    /// @param target The contract address to classify
+    /// @return protocolType The detected protocol type
+    function classifyProtocol(address target) public view returns (ProtocolType protocolType) {
+        // Check getReserves() → Uniswap v2 pair (0x0902f1ac)
+        (bool success,) = target.staticcall(abi.encodeWithSelector(0x0902f1ac));
+        if (success) return ProtocolType.UniswapV2;
+
+        // Check basketsNeeded() → Reserve Protocol RToken (0x77d9f986)
+        (success,) = target.staticcall(abi.encodeWithSelector(IRToken.basketsNeeded.selector));
+        if (success) {
+            // Also verify main() exists to confirm Reserve Protocol
+            (bool hasMain,) = target.staticcall(abi.encodeWithSelector(IRToken.main.selector));
+            if (hasMain) return ProtocolType.ReserveProtocol;
+        }
+
+        // Check totalAssets() → ERC-4626 vault (0x01e1d114)
+        (success,) = target.staticcall(abi.encodeWithSelector(0x01e1d114));
+        if (success) {
+            // Also check asset() to confirm ERC-4626
+            (bool hasAsset,) = target.staticcall(abi.encodeWithSelector(0x38d52e0f));
+            if (hasAsset) return ProtocolType.ERC4626Vault;
+        }
+
+        // Check pricePerShare() → Yearn v2 vault (0x99530b06)
+        (success,) = target.staticcall(abi.encodeWithSelector(0x99530b06));
+        if (success) return ProtocolType.YearnV2;
+
+        // Check latestRoundData() → Chainlink oracle (0xfeaf968c)
+        (success,) = target.staticcall(abi.encodeWithSelector(0xfeaf968c));
+        if (success) return ProtocolType.ChainlinkOracle;
+
+        // Check get_virtual_price() → Curve pool (0x07a2d13a)
+        (success,) = target.staticcall(abi.encodeWithSelector(0x07a2d13a));
+        if (success) return ProtocolType.CurvePool;
+
+        return ProtocolType.Unknown;
     }
 
     // --- Over-Collateralization Thresholds (scaled to 1e18) ---
@@ -366,8 +420,13 @@ contract CollateralizationDetector {
     function getRTokenPosition(address rToken) external view returns (RTokenPositionData memory data) {
         IRToken token = IRToken(rToken);
 
-        data.totalSupply = token.totalSupply();
-        data.basketsNeeded = uint256(token.basketsNeeded());
+        (bool success, bytes memory ret) = rToken.staticcall(abi.encodeWithSelector(IRToken.totalSupply.selector));
+        if (!success || ret.length < 32) return data;
+        data.totalSupply = abi.decode(ret, (uint256));
+
+        (success, ret) = rToken.staticcall(abi.encodeWithSelector(IRToken.basketsNeeded.selector));
+        if (!success || ret.length < 32) return data;
+        data.basketsNeeded = uint256(abi.decode(ret, (uint192)));
 
         if (data.totalSupply > 0) {
             // Calculate collateral ratio (basketsNeeded / totalSupply)
@@ -396,6 +455,97 @@ contract CollateralizationDetector {
                 } catch {}
             } catch {}
         } catch {}
+    }
+
+    /// @notice Performs deep adaptive reconnaissance on an RToken configuration
+    /// @param rToken The RToken contract address
+    /// @return config Detailed RToken configuration
+    function getRTokenConfiguration(address rToken) public view returns (RTokenConfiguration memory config) {
+        IRToken token = IRToken(rToken);
+
+        try token.main() returns (address mainAddr) {
+            config.main = mainAddr;
+            IMain main = IMain(mainAddr);
+
+            try main.basketHandler() returns (address handler) {
+                config.basketHandler = handler;
+                try IBasketHandler(handler).status() returns (uint8 s) {
+                    config.basketStatus = s;
+                } catch {}
+            } catch {}
+
+            try main.assetRegistry() returns (address registry) {
+                config.assetRegistry = registry;
+                try IAssetRegistry(registry).erc20s() returns (address[] memory assets) {
+                    config.allRegisteredAssets = assets;
+                } catch {}
+            } catch {}
+
+            try main.backingManager() returns (address manager) {
+                config.backingManager = manager;
+                try IBackingManager(manager).status() returns (uint8 s) {
+                    config.backingStatus = s;
+                } catch {}
+            } catch {}
+
+            config.isAdaptiveReconEnabled = true;
+        } catch {}
+    }
+
+    /// @notice Recursively discovers RTokens from a known RToken's asset registry
+    /// @param rToken A known RToken address to start from
+    /// @param maxDepth Maximum recursion depth to prevent infinite loops
+    /// @return discoveredRTokens Array of discovered RToken addresses
+    function discoverRTokens(address rToken, uint256 maxDepth) external view returns (address[] memory discoveredRTokens) {
+        if (maxDepth == 0) return new address[](0);
+
+        RTokenConfiguration memory config = getRTokenConfiguration(rToken);
+        if (!config.isAdaptiveReconEnabled) return new address[](0);
+
+        address[] memory potentialTokens = config.allRegisteredAssets;
+        
+        // Use a fixed size array for temporary storage
+        address[] memory found = new address[](potentialTokens.length * 5); // Allow for some growth
+        uint256 count = 0;
+
+        for (uint256 i = 0; i < potentialTokens.length; i++) {
+            if (classifyProtocol(potentialTokens[i]) == ProtocolType.ReserveProtocol) {
+                bool alreadyAdded = false;
+                for(uint256 k=0; k < count; k++) {
+                    if (found[k] == potentialTokens[i]) {
+                        alreadyAdded = true;
+                        break;
+                    }
+                }
+                if (!alreadyAdded) {
+                    found[count] = potentialTokens[i];
+                    count++;
+                }
+                
+                // Recurse if depth allows
+                if (maxDepth > 1) {
+                    address[] memory nested = this.discoverRTokens(potentialTokens[i], maxDepth - 1);
+                    for (uint256 j = 0; j < nested.length; j++) {
+                        bool nestedAlreadyAdded = false;
+                        for(uint256 k=0; k < count; k++) {
+                            if (found[k] == nested[j]) {
+                                nestedAlreadyAdded = true;
+                                break;
+                            }
+                        }
+                        if (!nestedAlreadyAdded && count < found.length) {
+                            found[count] = nested[j];
+                            count++;
+                        }
+                    }
+                }
+            }
+        }
+
+        discoveredRTokens = new address[](count);
+        for (uint256 i = 0; i < count; i++) {
+            discoveredRTokens[i] = found[i];
+        }
     }
 
     /// @notice Calculates the maximum extractable value from an over-collateralized RToken
@@ -427,48 +577,6 @@ contract CollateralizationDetector {
             profitBps = (excessBaskets * 10000) / supply;
             totalProfitUsd = (excessBaskets * basketValueUsd) / 1e18;
         }
-    }
-
-    // --- Heuristic Protocol Classification ---
-
-    /// @notice Attempts to classify an unknown contract by probing known DeFi selectors
-    /// @dev Tries calling known view functions and catches reverts
-    /// @param target The contract address to classify
-    /// @return protocolType The detected protocol type
-    function classifyProtocol(address target) external view returns (ProtocolType protocolType) {
-        // Check getReserves() → Uniswap v2 pair (0x0902f1ac)
-        (bool success,) = target.staticcall(abi.encodeWithSelector(0x0902f1ac));
-        if (success) return ProtocolType.UniswapV2;
-
-        // Check basketsNeeded() → Reserve Protocol RToken (0x77d9f986)
-        (success,) = target.staticcall(abi.encodeWithSelector(IRToken.basketsNeeded.selector));
-        if (success) {
-            // Also verify main() exists to confirm Reserve Protocol
-            (bool hasMain,) = target.staticcall(abi.encodeWithSelector(IRToken.main.selector));
-            if (hasMain) return ProtocolType.ReserveProtocol;
-        }
-
-        // Check totalAssets() → ERC-4626 vault (0x01e1d114)
-        (success,) = target.staticcall(abi.encodeWithSelector(0x01e1d114));
-        if (success) {
-            // Also check asset() to confirm ERC-4626
-            (bool hasAsset,) = target.staticcall(abi.encodeWithSelector(0x38d52e0f));
-            if (hasAsset) return ProtocolType.ERC4626Vault;
-        }
-
-        // Check pricePerShare() → Yearn v2 vault (0x99530b06)
-        (success,) = target.staticcall(abi.encodeWithSelector(0x99530b06));
-        if (success) return ProtocolType.YearnV2;
-
-        // Check latestRoundData() → Chainlink oracle (0xfeaf968c)
-        (success,) = target.staticcall(abi.encodeWithSelector(0xfeaf968c));
-        if (success) return ProtocolType.ChainlinkOracle;
-
-        // Check get_virtual_price() → Curve pool (0x07a2d13a)
-        (success,) = target.staticcall(abi.encodeWithSelector(0x07a2d13a));
-        if (success) return ProtocolType.CurvePool;
-
-        return ProtocolType.Unknown;
     }
 
     // --- Batch Operations via Multicall3 ---

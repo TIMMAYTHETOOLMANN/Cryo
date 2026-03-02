@@ -127,7 +127,7 @@ contract CrossChainDetector {
             config.name = "Base";
             config.aaveV3Pool = 0xA238Dd80C259a72e81d7e4664a9801593F98d1c5;
             config.compoundV3Comet = 0xb125E6687d4313864e53df431d5425969c15Eb2F;
-            config.sequencerUptimeFeed = 0xBCF85224fc0756B9Fa45aAb7d157a8263913aEcC;
+            config.sequencerUptimeFeed = 0xbCF85224fc0756b9fA45aab7D157A8263913AEcC;
             config.isL2 = true;
         } else if (chainId == CHAIN_AVALANCHE) {
             config.name = "Avalanche";
@@ -178,8 +178,10 @@ contract CrossChainDetector {
         (, int256 answer, uint256 startedAt,,) = AggregatorV3Interface(sequencerFeed).latestRoundData();
 
         isUp = answer == 0; // Chainlink: 0 = up, 1 = down
-        if (isUp && startedAt > 0) {
+        if (isUp && startedAt > 0 && startedAt <= block.timestamp) {
             timeSinceUp = block.timestamp - startedAt;
+        } else if (isUp && startedAt > block.timestamp) {
+            timeSinceUp = 0; // startedAt in future, treat as just started
         }
     }
 
