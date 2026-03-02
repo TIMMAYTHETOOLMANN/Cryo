@@ -173,7 +173,7 @@ class TestDataModels:
         """Test signal type enum"""
         assert SignalType.LIQUIDATION.value == "liquidation"
         assert SignalType.ARBITRAGE.value == "arbitrage"
-        assert SignalType.BACK_RUN.value == "backrun"
+        assert SignalType.BACKRUN.value == "backrun"
 
     def test_execution_module_enum(self):
         """Test execution module enum"""
@@ -208,7 +208,7 @@ class TestSignalQueue:
         # Create signals with different priorities
         signal1 = OpportunitySignal(
             signal_id="low_priority",
-            signal_type=SignalType.BACK_RUN,
+            signal_type=SignalType.BACKRUN,
             source_module=SignalSource.MEMPOOL_RADAR,
             chain_id=1,
             target_contract="0x123",
@@ -488,7 +488,7 @@ class TestVulnerabilityScanner:
     def test_scan_vulnerable_contract(self, vulnerability_scanner):
         """Test scanning vulnerable contract"""
         # Bytecode with swap function (sandwich vulnerable)
-        bytecode = "0x608060405238ed1739abcdef" * 100
+        bytecode = "0x" + "608060405238ed1739abcdef" * 100
 
         result = vulnerability_scanner.scan_bytecode(bytecode, "0xvuln")
 
@@ -597,6 +597,10 @@ class TestEndToEnd:
         # 1. Queue signal
         await signal_queue.enqueue(sample_signal)
         assert signal_queue.size() == 1
+
+        # 1b. Dequeue for processing
+        dequeued = await signal_queue.dequeue()
+        assert dequeued.signal_id == sample_signal.signal_id
 
         # 2. Score signal
         competition = competition_estimator.estimate(sample_signal)

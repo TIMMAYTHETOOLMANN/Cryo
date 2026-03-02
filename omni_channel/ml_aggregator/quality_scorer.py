@@ -207,7 +207,7 @@ class QualityScorer:
             SignalType.LIQUIDATION: 1.0,
             SignalType.ARBITRAGE: 0.9,
             SignalType.SANDWICH: 0.8,
-            SignalType.BACK_RUN: 0.85,
+            SignalType.BACKRUN: 0.85,
             SignalType.FRONT_RUN: 0.75,
             SignalType.CROSS_CHAIN_ARB: 0.7,
             SignalType.ORACLE_UPDATE: 0.95,

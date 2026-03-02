@@ -266,7 +266,7 @@ def create_execution_request(signal: Any, calldata: str = '0x') -> ExecutionRequ
     signal_type_map = {
         SignalType.LIQUIDATION: ExecutionType.LIQUIDATION,
         SignalType.ARBITRAGE: ExecutionType.ARBITRAGE,
-        SignalType.BACK_RUN: ExecutionType.BACKRUN,
+        SignalType.BACKRUN: ExecutionType.BACKRUN,
         SignalType.SANDWICH: ExecutionType.SANDWICH,
         SignalType.CROSS_CHAIN_ARB: ExecutionType.CROSS_CHAIN,
     }

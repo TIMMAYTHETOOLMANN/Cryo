@@ -16,7 +16,7 @@ Supported bridges:
 import asyncio
 import aiohttp
 import time
-from typing import Dict, List, Optional, Any, Set, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Any, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 from web3 import Web3

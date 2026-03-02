@@ -49,7 +49,7 @@ class ComplexityAnalyzer:
             SignalType.LIQUIDATION: 3,  # Moderate complexity
             SignalType.ARBITRAGE: 5,
             SignalType.SANDWICH: 4,
-            SignalType.BACK_RUN: 3,
+            SignalType.BACKRUN: 3,
             SignalType.FRONT_RUN: 4,
             SignalType.CROSS_CHAIN_ARB: 8,  # High complexity
             SignalType.ORACLE_UPDATE: 2,  # Low complexity
@@ -153,7 +153,7 @@ class ComplexityAnalyzer:
             SignalType.LIQUIDATION: 2,  # Check HF -> liquidate
             SignalType.ARBITRAGE: 4,    # Buy -> transfer -> sell -> transfer back
             SignalType.SANDWICH: 3,     # Front-run -> victim -> back-run
-            SignalType.BACK_RUN: 2,     # Wait -> execute
+            SignalType.BACKRUN: 2,     # Wait -> execute
             SignalType.FRONT_RUN: 2,    # Detect -> front-run
             SignalType.CROSS_CHAIN_ARB: 6,  # Multiple bridge + swap steps
             SignalType.ORACLE_UPDATE: 1,    # Single transaction
@@ -187,7 +187,7 @@ class ComplexityAnalyzer:
             SignalType.LIQUIDATION: 2.0,  # Need debt + collateral
             SignalType.ARBITRAGE: 1.5,
             SignalType.SANDWICH: 1.3,
-            SignalType.BACK_RUN: 1.0,
+            SignalType.BACKRUN: 1.0,
             SignalType.FRONT_RUN: 1.2,
             SignalType.CROSS_CHAIN_ARB: 3.0,  # Need capital on multiple chains
             SignalType.ORACLE_UPDATE: 0.5,
