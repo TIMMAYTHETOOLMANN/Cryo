@@ -713,6 +713,138 @@ class TestPerformance:
         assert analyses_per_second >= 100
 
 
+
+# ============================================================================
+# Module 10: RPCGateway Integration with MODULE_9 OmniScopeEngine
+# ============================================================================
+
+class MockRPCGateway:
+    """Minimal mock of profit_engine.RPCGateway for unit tests."""
+
+    def __init__(self, chain_map=None):
+        self._chain_map = chain_map or {}
+        self.call_count = 0
+        self._stats = {
+            "total_requests": 0,
+            "total_batched": 0,
+            "total_failovers": 0,
+            "total_429s": 0,
+            "uptime_seconds": 0,
+            "rps": 0.0,
+            "chains": {},
+        }
+
+    def get_w3(self, chain_id: int):
+        """Return a mock Web3 instance (or None) for the given chain."""
+        self.call_count += 1
+        return self._chain_map.get(chain_id)
+
+    def get_stats(self) -> dict:
+        return dict(self._stats)
+
+
+class TestRPCGatewayIntegration:
+    """Tests for Module 10 RPC Gateway wiring into the MODULE_9 engine."""
+
+    def test_engine_accepts_no_gateway(self):
+        """OmniScopeEngine works without a gateway (backward compat)."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        engine = OmniScopeEngine()
+        assert engine.rpc_gateway is None
+
+    def test_engine_stores_gateway(self):
+        """OmniScopeEngine exposes the injected gateway."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        gw = MockRPCGateway()
+        engine = OmniScopeEngine(rpc_gateway=gw)
+        assert engine.rpc_gateway is gw
+
+    def test_gateway_forwarded_to_mempool_radar(self):
+        """OmniScopeEngine forwards the gateway to MempoolRadar."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        gw = MockRPCGateway()
+        engine = OmniScopeEngine(rpc_gateway=gw)
+        assert engine.mempool_radar._rpc_gateway is gw
+
+    def test_mempool_radar_no_gateway(self):
+        """MempoolRadar works without a gateway (backward compat)."""
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+        bus = DataBus()
+        radar = MempoolRadar(bus)
+        assert radar._rpc_gateway is None
+
+    def test_mempool_radar_with_gateway(self):
+        """MempoolRadar stores injected gateway."""
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+        bus = DataBus()
+        gw = MockRPCGateway()
+        radar = MempoolRadar(bus, rpc_gateway=gw)
+        assert radar._rpc_gateway is gw
+
+    def test_get_full_stats_includes_gateway_flag(self):
+        """get_full_stats() reports rpc_gateway_active correctly."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        engine_no_gw = OmniScopeEngine()
+        assert engine_no_gw.get_full_stats()["rpc_gateway_active"] is False
+
+        gw = MockRPCGateway()
+        engine_with_gw = OmniScopeEngine(rpc_gateway=gw)
+        stats = engine_with_gw.get_full_stats()
+        assert stats["rpc_gateway_active"] is True
+        assert "rpc_gateway" in stats
+
+    def test_get_full_stats_gateway_stats_embedded(self):
+        """get_full_stats() embeds the gateway's own stats dict."""
+        from MODULE_9_OMNI_SCOPE.engine import OmniScopeEngine
+        gw = MockRPCGateway()
+        engine = OmniScopeEngine(rpc_gateway=gw)
+        stats = engine.get_full_stats()
+        assert stats["rpc_gateway"]["total_requests"] == 0
+        assert "chains" in stats["rpc_gateway"]
+
+    @pytest.mark.asyncio
+    async def test_poll_fallback_uses_gateway_w3(self):
+        """_poll_pending_fallback returns early when gateway has no active endpoint."""
+        from unittest.mock import AsyncMock, patch
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+
+        # Gateway returns None for chain 1 → radar should exit immediately
+        gw = MockRPCGateway(chain_map={})  # no endpoint for chain 1
+        bus = DataBus()
+        radar = MempoolRadar(bus, rpc_gateway=gw)
+        radar._running = True
+
+        # Should return quickly (no active endpoint)
+        await asyncio.wait_for(radar._poll_pending_fallback(), timeout=2.0)
+        # Gateway's get_w3 was called once
+        assert gw.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_poll_fallback_with_real_w3_mock(self):
+        """_poll_pending_fallback uses the w3 returned by the gateway."""
+        from unittest.mock import MagicMock
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from MODULE_9_OMNI_SCOPE.array_1_mempool_radar.mempool_radar import MempoolRadar
+
+        mock_w3 = MagicMock()
+        mock_w3.eth.get_block.side_effect = Exception("stop")
+        gw = MockRPCGateway(chain_map={1: mock_w3})
+        bus = DataBus()
+        radar = MempoolRadar(bus, rpc_gateway=gw)
+        # _running=False so the polling loop exits after the first get_w3() call.
+        radar._running = False
+
+        try:
+            await asyncio.wait_for(radar._poll_pending_fallback(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        # gateway.get_w3(1) must have been called
+        assert gw.call_count >= 1
+
+
 # ============================================================================
 # Run Tests
 # ============================================================================
