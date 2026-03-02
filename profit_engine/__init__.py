@@ -22,6 +22,7 @@ from .gas_optimizer import GasOptimizer, GasEstimate
 from .profit_ledger import ProfitLedger, ProfitEntry, PhaseState
 from .rpc_gateway import RPCGateway, RequestPriority, build_default_gateway
 from .zero_revert_pipeline import ZeroRevertPipeline
+from .jit_liquidation_engine import JITLiquidationEngine, WatchedPosition
 
 __all__ = [
     'TriangulatedProfitEngine',
@@ -33,4 +34,5 @@ __all__ = [
     'ProfitLedger', 'ProfitEntry', 'PhaseState',
     'RPCGateway', 'RequestPriority', 'build_default_gateway',
     'ZeroRevertPipeline',
+    'JITLiquidationEngine', 'WatchedPosition',
 ]

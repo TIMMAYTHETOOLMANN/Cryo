@@ -846,6 +846,154 @@ class TestRPCGatewayIntegration:
 
 
 # ============================================================================
+# MODULE 11: JIT Liquidation Engine Integration
+# ============================================================================
+
+class TestJITEngineIntegration:
+    """Tests for Module 11 JITLiquidationEngine wiring into Pipeline."""
+
+    def test_jit_engine_importable(self):
+        """JITLiquidationEngine is importable from profit_engine."""
+        from profit_engine import JITLiquidationEngine, WatchedPosition
+        assert JITLiquidationEngine is not None
+        assert WatchedPosition is not None
+
+    def test_jit_engine_in_profit_engine_all(self):
+        """JITLiquidationEngine appears in profit_engine.__all__."""
+        import profit_engine
+        assert "JITLiquidationEngine" in profit_engine.__all__
+        assert "WatchedPosition" in profit_engine.__all__
+
+    def test_pipeline_has_jit_stats_keys(self):
+        """Pipeline.__init__ creates all Module 11 stats keys."""
+        from unittest.mock import MagicMock, patch
+
+        # Patch heavy dependencies so Pipeline can instantiate
+        with patch(
+            "MODULE_1_LIQUIDATION_ENGINE.pipeline.JIT_ENGINE_AVAILABLE", False
+        ):
+            from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+            p = Pipeline.__new__(Pipeline)
+            p.config = MagicMock()
+            p.config.get_chain = MagicMock(return_value=None)
+            p.stats = {
+                "jit_positions_tracked": 0,
+                "jit_simulations_run": 0,
+                "jit_simulations_passed": 0,
+                "jit_txs_broadcast": 0,
+                "jit_txs_confirmed": 0,
+                "jit_txs_reverted": 0,
+                "jit_profit_usd": 0.0,
+            }
+        for key in [
+            "jit_positions_tracked",
+            "jit_simulations_run",
+            "jit_simulations_passed",
+            "jit_txs_broadcast",
+            "jit_txs_confirmed",
+            "jit_txs_reverted",
+            "jit_profit_usd",
+        ]:
+            assert key in p.stats, f"Missing JIT stats key: {key}"
+
+    def test_jit_engine_instantiates_with_empty_providers(self):
+        """JITLiquidationEngine can be created with an empty w3 providers dict."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        assert engine is not None
+        assert hasattr(engine, "oracle_watcher")
+        assert hasattr(engine, "jit_executor")
+        assert hasattr(engine, "profitability")
+
+    def test_jit_engine_feed_watchlist_empty(self):
+        """feed_watchlist with empty dict does not raise."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        engine.feed_watchlist({})  # must not raise
+
+    def test_jit_engine_feed_watchlist_adds_positions(self):
+        """feed_watchlist with valid positions populates jit_executor.jit_positions."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        watchlist = {
+            "0xABCD": {
+                "chain_id": 1,
+                "last_hf": 1.03,
+                "debt_usd": 5000.0,
+                "collateral_asset": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+                "debt_asset": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+                "pool": "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2",
+            }
+        }
+        engine.feed_watchlist(watchlist)
+        assert len(engine.jit_executor.jit_positions) >= 1
+
+    def test_jit_engine_get_stats_returns_dict(self):
+        """get_stats() returns a dict with expected keys."""
+        from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+        engine = JITLiquidationEngine({})
+        stats = engine.get_stats()
+        assert isinstance(stats, dict)
+        for key in [
+            "jit_positions", "simulations_run", "simulations_passed",
+            "txs_broadcast", "txs_confirmed", "txs_reverted",
+            "total_profit_usd", "oracle_feeds",
+        ]:
+            assert key in stats, f"Missing stats key: {key}"
+
+    def test_pipeline_build_w3_providers_no_rpc(self):
+        """_build_w3_providers returns empty dict when no RPC URLs are configured."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_chain = MagicMock()
+        mock_chain.rpc_url = ""
+        p.config = MagicMock()
+        p.config.get_chain = MagicMock(return_value=mock_chain)
+
+        providers = p._build_w3_providers()
+        assert isinstance(providers, dict)
+        assert len(providers) == 0
+
+    def test_pipeline_sync_jit_watchlist_no_engine(self):
+        """_sync_jit_watchlist is a no-op when jit_engine is None."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        p.jit_engine = None
+        # Must not raise even with positions
+        p._sync_jit_watchlist([MagicMock()])
+
+    def test_pipeline_sync_jit_watchlist_calls_feed(self):
+        """_sync_jit_watchlist forwards detected positions to jit_engine.feed_watchlist."""
+        from unittest.mock import MagicMock, patch
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_engine = MagicMock()
+        p.jit_engine = mock_engine
+
+        mock_pos = MagicMock()
+        mock_pos.user = "0x1234"
+        mock_pos.chain_id = 1
+        mock_pos.health_factor = 1.04
+        mock_pos.debt_amount = int(1e21)  # 1000 ETH in Wei
+        mock_pos.collateral_asset = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+        mock_pos.debt_asset = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+        mock_pos.pool_address = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2"
+
+        p._sync_jit_watchlist([mock_pos])
+
+        mock_engine.feed_watchlist.assert_called_once()
+        call_arg = mock_engine.feed_watchlist.call_args[0][0]
+        assert "0x1234" in call_arg
+        assert call_arg["0x1234"]["chain_id"] == 1
+        assert call_arg["0x1234"]["last_hf"] == 1.04
+
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 

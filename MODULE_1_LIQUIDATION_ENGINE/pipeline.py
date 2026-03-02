@@ -2,7 +2,8 @@
 """
 MODULE 1 — Enhanced Master Pipeline (Script 4 Upgraded)
 =========================================================
-Fully wired with Scripts 1-3 + Module 9 Omni-Scope Triangulation Engine.
+Fully wired with Scripts 1-3 + Module 9 Omni-Scope Triangulation Engine
++ Module 11 JIT Liquidation Timing Optimizer.
 
 $0 Initial Capital → Exponential Profit:
   Stage 0  Pre-Flight       │ Validate system (zero capital)
@@ -15,12 +16,15 @@ $0 Initial Capital → Exponential Profit:
   Stage 6  Profit Collection │ Treasury monitoring
   Stage 7  Analytics         │ A/B testing + RL parameter tuning + anomaly detection
   Module 9 Omni-Scope        │ 5 detector arrays + ML ranker (predictive intel)
+  Module 11 JIT Engine       │ Oracle-triggered, simulate-before-send, JIT execution
 """
 
 import asyncio
 import logging
 import time
 from typing import Dict, List, Optional
+
+from web3 import Web3
 
 from .config.settings import ConfigManager, get_config
 from .stage_0_preflight.system_validator import SystemValidator, PreFlightReport
@@ -57,7 +61,18 @@ except ImportError:
     OmniScopeEngine = None  # type: ignore
     OMNI_SCOPE_AVAILABLE = False
 
+# Module 11 — JIT Liquidation Timing Optimizer
+try:
+    from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+    JIT_ENGINE_AVAILABLE = True
+except ImportError:
+    JITLiquidationEngine = None  # type: ignore
+    JIT_ENGINE_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
+
+# Chain IDs supported by the JIT engine for Web3 provider construction.
+_JIT_CHAIN_IDS = [1, 42161, 10, 8453, 137, 43114, 56, 324]
 
 
 class Pipeline:
@@ -110,6 +125,14 @@ class Pipeline:
         if OMNI_SCOPE_AVAILABLE:
             self.omni_scope = OmniScopeEngine()
 
+        # Module 11: JIT Liquidation Timing Optimizer
+        self.jit_engine: Optional["JITLiquidationEngine"] = None
+        if JIT_ENGINE_AVAILABLE:
+            try:
+                self.jit_engine = JITLiquidationEngine(self._build_w3_providers())
+            except Exception as _jit_err:
+                logger.warning(f"JITLiquidationEngine init failed (stub mode): {_jit_err}")
+
         # State
         self._preflight: Optional[PreFlightReport] = None
         self._gas_report: Optional[GasReport] = None
@@ -142,7 +165,56 @@ class Pipeline:
             "risk_rejections": 0,
             "twap_rejections": 0,
             "rl_episodes": 0,
+            # Module 11: JIT execution stats
+            "jit_positions_tracked": 0,
+            "jit_simulations_run": 0,
+            "jit_simulations_passed": 0,
+            "jit_txs_broadcast": 0,
+            "jit_txs_confirmed": 0,
+            "jit_txs_reverted": 0,
+            "jit_profit_usd": 0.0,
         }
+
+    # ------------------------------------------------------------------
+    # Module 11 helpers
+    # ------------------------------------------------------------------
+
+    def _build_w3_providers(self) -> Dict[int, Web3]:
+        """Build Web3 instances from configured RPC URLs for all known chains."""
+        providers: Dict[int, Web3] = {}
+        for chain_id in _JIT_CHAIN_IDS:
+            chain_cfg = self.config.get_chain(chain_id)
+            if chain_cfg and chain_cfg.rpc_url:
+                try:
+                    providers[chain_id] = Web3(
+                        Web3.HTTPProvider(chain_cfg.rpc_url, request_kwargs={"timeout": 10})
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to create Web3 provider for chain %d: %s", chain_id, exc)
+        return providers
+
+    def _sync_jit_watchlist(self, positions: List[LiquidatablePosition]) -> None:
+        """Feed detected positions into the JIT engine watchlist.
+
+        Note: ``debt_usd`` is estimated as ``debt_amount_wei / 1e18 * 2500`` — a
+        placeholder using a rough ETH price.  The JIT engine uses this value only
+        for initial profit-proximity scoring; it re-fetches actual prices via
+        on-chain oracles during active monitoring.
+        """
+        if not self.jit_engine:
+            return
+        watchlist = {
+            pos.user: {
+                "chain_id": pos.chain_id,
+                "last_hf": pos.health_factor,
+                "debt_usd": pos.debt_amount / 1e18 * 2500,  # rough ETH price estimate
+                "collateral_asset": pos.collateral_asset,
+                "debt_asset": pos.debt_asset,
+                "pool": getattr(pos, "pool_address", ""),
+            }
+            for pos in positions
+        }
+        self.jit_engine.feed_watchlist(watchlist)
 
     # ------------------------------------------------------------------
     # Entry points
@@ -216,6 +288,14 @@ class Pipeline:
         else:
             logger.info("\n▸ MODULE 9: Omni-Scope not available (install MODULE_9_OMNI_SCOPE)")
 
+        # ── MODULE 11: JIT Liquidation Timing Optimizer ──
+        if self.jit_engine:
+            logger.info("\n▸ MODULE 11: Starting JIT Liquidation Timing Optimizer…")
+            await self.jit_engine.start()
+            logger.info("  ✅ Oracle watcher + simulate-before-send + JIT executor active")
+        else:
+            logger.info("\n▸ MODULE 11: JIT engine not available")
+
         # ── MAIN LOOP ──
         logger.info("\n" + "─" * 80)
         logger.info("  ENTERING MAIN LOOP (Script 4 Enhanced Pipeline)")
@@ -280,6 +360,9 @@ class Pipeline:
             return
 
         self.stats["opportunities_found"] += len(opportunities)
+
+        # ── MODULE 11: Feed watchlist into JIT Timing Optimizer ──
+        self._sync_jit_watchlist(opportunities)
 
         # ── STAGE 2: Analysis (multi-exit + surplus + RL-tuned) ──
         profitable = await self._stage_2_analyse(opportunities)
@@ -717,9 +800,21 @@ class Pipeline:
         if self.omni_scope:
             await self.omni_scope.stop()
 
+        # Stop Module 11 JIT engine
+        if self.jit_engine:
+            await self.jit_engine.stop()
+            jit_stats = self.jit_engine.get_stats()
+            self.stats["jit_positions_tracked"] = jit_stats.get("jit_positions", 0)
+            self.stats["jit_simulations_run"] = jit_stats.get("simulations_run", 0)
+            self.stats["jit_simulations_passed"] = jit_stats.get("simulations_passed", 0)
+            self.stats["jit_txs_broadcast"] = jit_stats.get("txs_broadcast", 0)
+            self.stats["jit_txs_confirmed"] = jit_stats.get("txs_confirmed", 0)
+            self.stats["jit_txs_reverted"] = jit_stats.get("txs_reverted", 0)
+            self.stats["jit_profit_usd"] = jit_stats.get("total_profit_usd", 0.0)
+
         uptime = time.time() - self.stats["start_time"]
         logger.info("\n" + "=" * 80)
-        logger.info("  PIPELINE SHUTDOWN — FINAL REPORT (Script 4 + Omni-Scope)")
+        logger.info("  PIPELINE SHUTDOWN — FINAL REPORT (Script 4 + Omni-Scope + JIT)")
         logger.info("=" * 80)
         logger.info(f"  Uptime:                  {uptime/3600:.2f} hours")
         logger.info(f"  Mode:                    {self._mode}")
@@ -762,6 +857,17 @@ class Pipeline:
         if self.omni_scope:
             logger.info(f"\n  ─── Module 9: Omni-Scope ───")
             self.omni_scope.print_status()
+
+        # Module 11 JIT stats
+        if self.jit_engine:
+            logger.info(f"\n  ─── Module 11: JIT Timing Optimizer ───")
+            logger.info(f"  JIT positions tracked:   {self.stats['jit_positions_tracked']}")
+            logger.info(f"  Simulations run:         {self.stats['jit_simulations_run']}")
+            logger.info(f"  Simulations passed:      {self.stats['jit_simulations_passed']}")
+            logger.info(f"  TXs broadcast:           {self.stats['jit_txs_broadcast']}")
+            logger.info(f"  TXs confirmed:           {self.stats['jit_txs_confirmed']}")
+            logger.info(f"  TXs reverted:            {self.stats['jit_txs_reverted']}")
+            logger.info(f"  JIT profit:              ${self.stats['jit_profit_usd']:.2f}")
 
         # Analytics summary
         logger.info("\n  ─── Analytics ───")
