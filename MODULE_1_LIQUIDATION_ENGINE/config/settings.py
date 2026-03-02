@@ -82,6 +82,8 @@ class ExecutionConfig:
     health_factor_threshold: float = 1.05
     min_debt_usd: float = 100.0
     transaction_timeout_seconds: int = 120
+    # Maximum number of positions to push into the active watchlist (ranked by HF, lowest first)
+    max_watchlist_size: int = 500
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +265,7 @@ class ConfigManager:
             health_factor_threshold=float(os.getenv("HEALTH_FACTOR_THRESHOLD", "1.05")),
             min_debt_usd=float(os.getenv("MIN_DEBT_USD", "1000")),
             transaction_timeout_seconds=int(os.getenv("TRANSACTION_TIMEOUT_SECONDS", "120")),
+            max_watchlist_size=int(os.getenv("MAX_WATCHLIST_SIZE", "500")),
         )
 
     @property

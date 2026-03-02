@@ -204,8 +204,9 @@ class OpportunityDetector:
       - WebSocket event streaming support
     """
 
-    # Extended HF range for preemptive scanning
-    PREEMPTIVE_HF_THRESHOLD = 1.20  # Track positions up to 1.20
+    # Extended HF range for preemptive scanning — capture positions up to 1.50 so the
+    # watchlist always contains a rich set of near-liquidation candidates.
+    PREEMPTIVE_HF_THRESHOLD = 1.50  # Track positions up to 1.50
 
     def __init__(self, config: Optional[ConfigManager] = None):
         self.config = config or get_config()

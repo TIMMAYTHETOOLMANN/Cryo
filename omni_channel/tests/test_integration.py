@@ -974,6 +974,9 @@ class TestJITEngineIntegration:
         p = Pipeline.__new__(Pipeline)
         mock_engine = MagicMock()
         p.jit_engine = mock_engine
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 500
+        p.config = mock_cfg
 
         mock_pos = MagicMock()
         mock_pos.user = "0x1234"
@@ -1147,6 +1150,9 @@ class TestZeroRevertPipelineIntegration:
         p = Pipeline.__new__(Pipeline)
         mock_zrp = MagicMock()
         p.zero_revert_pipeline = mock_zrp
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 500
+        p.config = mock_cfg
 
         mock_pos = MagicMock()
         mock_pos.user = "0xABCD"
@@ -1164,6 +1170,144 @@ class TestZeroRevertPipelineIntegration:
         assert "0xABCD" in arg
         assert arg["0xABCD"]["chain_id"] == 1
         assert arg["0xABCD"]["last_hf"] == 1.02
+
+
+# ============================================================================
+# SCALING: Watchlist + Oracle Coverage
+# ============================================================================
+
+class TestScalingOpportunitySurface:
+    """Tests for the expanded watchlist, oracle coverage, and chain poll intervals."""
+
+    def test_max_watchlist_size_default(self):
+        """ExecutionConfig.max_watchlist_size defaults to 500."""
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        cfg = ExecutionConfig()
+        assert cfg.max_watchlist_size == 500
+
+    def test_max_watchlist_size_env_override(self, monkeypatch):
+        """MAX_WATCHLIST_SIZE env var overrides the default."""
+        import os
+        from MODULE_1_LIQUIDATION_ENGINE.config.settings import ExecutionConfig
+        monkeypatch.setenv("MAX_WATCHLIST_SIZE", "250")
+        cfg = ExecutionConfig(max_watchlist_size=int(os.getenv("MAX_WATCHLIST_SIZE", "500")))
+        assert cfg.max_watchlist_size == 250
+
+    def test_preemptive_hf_threshold_raised(self):
+        """PREEMPTIVE_HF_THRESHOLD is now 1.50 (up from 1.20) to catch more positions."""
+        from MODULE_1_LIQUIDATION_ENGINE.stage_1_detection.opportunity_detector import OpportunityDetector
+        assert OpportunityDetector.PREEMPTIVE_HF_THRESHOLD == 1.50
+
+    def test_block_watcher_top_n_default(self):
+        """BlockWatcher.watch_loop default top_n is 200 (up from 15)."""
+        import inspect
+        from profit_engine.zero_revert_pipeline import BlockWatcher
+        sig = inspect.signature(BlockWatcher.watch_loop)
+        assert sig.parameters['top_n'].default == 200
+
+    def test_chain_poll_interval_structure(self):
+        """CHAIN_POLL_INTERVAL covers all 8 supported chains with valid intervals."""
+        from profit_engine.zero_revert_pipeline import CHAIN_POLL_INTERVAL
+        expected_chains = {1, 42161, 10, 8453, 137, 43114, 56, 324}
+        assert set(CHAIN_POLL_INTERVAL.keys()) == expected_chains
+        # L2s should be polled more aggressively than Ethereum mainnet
+        assert CHAIN_POLL_INTERVAL[42161] <= CHAIN_POLL_INTERVAL[1]
+        assert CHAIN_POLL_INTERVAL[10] <= CHAIN_POLL_INTERVAL[1]
+        assert CHAIN_POLL_INTERVAL[8453] <= CHAIN_POLL_INTERVAL[1]
+        # All intervals must be positive
+        for chain_id, interval in CHAIN_POLL_INTERVAL.items():
+            assert interval > 0, f"Chain {chain_id} has non-positive poll interval"
+
+    def test_chainlink_feeds_expanded(self):
+        """CHAINLINK_FEEDS has expanded to include BSC, more feeds per chain."""
+        from profit_engine.zero_revert_pipeline import CHAINLINK_FEEDS
+        # BSC added
+        assert 56 in CHAINLINK_FEEDS
+        assert 'BNB/USD' in CHAINLINK_FEEDS[56]
+        # Arbitrum has more feeds than before
+        assert 'ARB/USD' in CHAINLINK_FEEDS[42161]
+        assert 'USDC/USD' in CHAINLINK_FEEDS[42161]
+        # Avalanche has more feeds
+        assert 'USDC/USD' in CHAINLINK_FEEDS[43114]
+        assert 'AAVE/USD' in CHAINLINK_FEEDS[43114]
+        # Total across all chains should be ≥ 40
+        total = sum(len(v) for v in CHAINLINK_FEEDS.values())
+        assert total >= 40, f"Expected ≥40 feeds, got {total}"
+
+    def test_collateral_to_feed_expanded(self):
+        """COLLATERAL_TO_FEED includes additional volatile altcoin collateral types."""
+        from profit_engine.zero_revert_pipeline import COLLATERAL_TO_FEED
+        # New entries from the expansion
+        assert '0xba100000625a3754423978a60c9317c58a424e3d' in COLLATERAL_TO_FEED  # BAL
+        assert '0xc18360217d8f7ab5e7c516566761ea12ce7f9d72' in COLLATERAL_TO_FEED  # ENS
+        assert '0x853d955acef822db058eb8505911ed77f175b99e' in COLLATERAL_TO_FEED  # FRAX
+        assert '0x40d16fc0246ad3160ccc09b8d0d3a2cd28ae6c2f' in COLLATERAL_TO_FEED  # GHO
+        assert len(COLLATERAL_TO_FEED) >= 15
+
+    def test_sync_jit_watchlist_sorts_and_caps(self):
+        """_sync_jit_watchlist sends top max_watchlist_size positions sorted by HF ascending."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_engine = MagicMock()
+        p.jit_engine = mock_engine
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 2  # cap at 2
+        p.config = mock_cfg
+
+        def make_pos(user, hf):
+            pos = MagicMock()
+            pos.user = user
+            pos.chain_id = 1
+            pos.health_factor = hf
+            pos.debt_amount = int(1e21)
+            pos.collateral_asset = "0x0"
+            pos.debt_asset = "0x0"
+            pos.pool_address = "0x0"
+            return pos
+
+        positions = [make_pos("0xHIGH", 1.40), make_pos("0xLOW", 1.01), make_pos("0xMID", 1.10)]
+        p._sync_jit_watchlist(positions)
+
+        mock_engine.feed_watchlist.assert_called_once()
+        arg = mock_engine.feed_watchlist.call_args[0][0]
+        # Only 2 positions (capped) and they must be the two lowest HF
+        assert len(arg) == 2
+        assert "0xLOW" in arg
+        assert "0xMID" in arg
+        assert "0xHIGH" not in arg
+
+    def test_sync_zrp_watchlist_sorts_and_caps(self):
+        """_sync_zrp_watchlist sends top max_watchlist_size positions sorted by HF ascending."""
+        from unittest.mock import MagicMock
+        from MODULE_1_LIQUIDATION_ENGINE.pipeline import Pipeline
+
+        p = Pipeline.__new__(Pipeline)
+        mock_zrp = MagicMock()
+        p.zero_revert_pipeline = mock_zrp
+        mock_cfg = MagicMock()
+        mock_cfg.execution.max_watchlist_size = 1  # cap at 1
+        p.config = mock_cfg
+
+        def make_pos(user, hf):
+            pos = MagicMock()
+            pos.user = user
+            pos.chain_id = 1
+            pos.health_factor = hf
+            pos.debt_amount = int(1e21)
+            pos.collateral_asset = "0x0"
+            pos.debt_asset = "0x0"
+            pos.pool_address = "0x0"
+            return pos
+
+        positions = [make_pos("0xHIGH", 1.40), make_pos("0xCRITICAL", 1.005)]
+        p._sync_zrp_watchlist(positions)
+
+        mock_zrp.feed_watchlist.assert_called_once()
+        arg = mock_zrp.feed_watchlist.call_args[0][0]
+        assert len(arg) == 1
+        assert "0xCRITICAL" in arg
 
 
 # ============================================================================

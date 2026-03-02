@@ -222,6 +222,10 @@ class Pipeline:
     def _sync_jit_watchlist(self, positions: List[LiquidatablePosition]) -> None:
         """Feed detected positions into the JIT engine watchlist.
 
+        Positions are sorted by health factor (ascending) and capped at
+        ``max_watchlist_size`` so only the most at-risk candidates are actively
+        monitored.  This avoids RPC flooding while maximising liquidation coverage.
+
         Note: ``debt_usd`` is estimated as ``debt_amount_wei / 1e18 * 2500`` — a
         placeholder using a rough ETH price.  The JIT engine uses this value only
         for initial profit-proximity scoring; it re-fetches actual prices via
@@ -229,6 +233,8 @@ class Pipeline:
         """
         if not self.jit_engine:
             return
+        max_size = self.config.execution.max_watchlist_size
+        candidates = sorted(positions, key=lambda p: p.health_factor)[:max_size]
         watchlist = {
             pos.user: {
                 "chain_id": pos.chain_id,
@@ -238,14 +244,20 @@ class Pipeline:
                 "debt_asset": pos.debt_asset,
                 "pool": getattr(pos, "pool_address", ""),
             }
-            for pos in positions
+            for pos in candidates
         }
         self.jit_engine.feed_watchlist(watchlist)
 
     def _sync_zrp_watchlist(self, positions: List[LiquidatablePosition]) -> None:
-        """Feed detected positions into the Zero-Revert Pipeline's position index."""
+        """Feed detected positions into the Zero-Revert Pipeline's position index.
+
+        Like ``_sync_jit_watchlist``, caps at ``max_watchlist_size`` positions
+        ranked by lowest health factor first.
+        """
         if not self.zero_revert_pipeline:
             return
+        max_size = self.config.execution.max_watchlist_size
+        candidates = sorted(positions, key=lambda p: p.health_factor)[:max_size]
         watchlist = {
             pos.user: {
                 "chain_id": pos.chain_id,
@@ -255,7 +267,7 @@ class Pipeline:
                 "debt_asset": pos.debt_asset,
                 "pool": getattr(pos, "pool_address", ""),
             }
-            for pos in positions
+            for pos in candidates
         }
         self.zero_revert_pipeline.feed_watchlist(watchlist)
 
