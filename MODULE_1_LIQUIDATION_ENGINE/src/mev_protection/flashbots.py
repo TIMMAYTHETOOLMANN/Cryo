@@ -615,7 +615,7 @@ class MEVProtection:
         See: https://docs.flashbots.net/flashbots-mev-share/searchers/understanding-bundles
         """
         if not self._flashbots_signer:
-            logger.warning("MEV-Share: Flashbots signer not initialised")
+            logger.warning("MEV-Share: Flashbots signer not initialized")
             return None
 
         try:
@@ -670,7 +670,8 @@ class MEVProtection:
                 logger.warning(f"MEV-Share error: {data['error']}")
                 return None
 
-            bundle_hash = data.get("result", {}).get("bundleHash", "")
+            result = data.get("result", "")
+            bundle_hash = result if isinstance(result, str) else result.get("bundleHash", "")
             self.stats["mev_share_submitted"] += 1
 
             logger.info(
@@ -825,7 +826,8 @@ class MEVProtection:
                 logger.warning(f"MEV-Share backrun error: {data['error']}")
                 return None
 
-            bundle_hash = data.get("result", {}).get("bundleHash", "")
+            result = data.get("result", "")
+            bundle_hash = result if isinstance(result, str) else result.get("bundleHash", "")
             self.stats["mev_share_submitted"] += 1
             self.stats["backruns_detected"] += 1
 

@@ -210,7 +210,9 @@ class _BaseProvider:
         if _is_stablecoin(asset):
             fee_usd = fee_wei / decimals       # Stablecoin: 1 token = ~$1
         elif decimals == _DECIMALS_8:
-            fee_usd = (fee_wei / _DECIMALS_8) * eth_price_usd  # e.g. WBTC priced via oracle
+            # 8-decimal tokens (e.g. WBTC) — uses eth_price_usd as a proxy;
+            # for accurate pricing a dedicated oracle should be used.
+            fee_usd = (fee_wei / _DECIMALS_8) * eth_price_usd
         else:
             fee_usd = (fee_wei / _DECIMALS_18) * eth_price_usd
         return FlashLoanQuote(

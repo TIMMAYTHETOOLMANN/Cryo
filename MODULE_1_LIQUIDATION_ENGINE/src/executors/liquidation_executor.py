@@ -509,25 +509,27 @@ class LiquidationExecutor:
             if request.use_flashbots:
                 route = self.mev_protection.default_route
                 logger.info(f"🛡️ Routing via {route.value} for MEV protection")
-                tx_hash_str = await self.mev_protection.send_private_transaction(
+                fb_result = await self.mev_protection.send_private_transaction(
                     signed_tx=raw_tx_hex,
                     w3=w3,
                     route=route,
                 )
-                if tx_hash_str is None:
+                if fb_result is None:
                     # Fallback to public mempool if Flashbots fails
                     logger.warning("Flashbots routing failed — falling back to public mempool")
-                    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-                    tx_hash_str = tx_hash.hex()
+                    tx_hash_bytes = w3.eth.send_raw_transaction(signed.raw_transaction)
+                else:
+                    tx_hash_bytes = fb_result if isinstance(fb_result, bytes) else bytes.fromhex(fb_result.replace("0x", ""))
+                tx_hash_str = tx_hash_bytes.hex() if isinstance(tx_hash_bytes, bytes) else str(tx_hash_bytes)
                 logger.info(f"📤 TX submitted via {route.value}: {tx_hash_str}")
             else:
-                tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-                tx_hash_str = tx_hash.hex()
+                tx_hash_bytes = w3.eth.send_raw_transaction(signed.raw_transaction)
+                tx_hash_str = tx_hash_bytes.hex()
                 logger.info(f"📤 TX submitted (public mempool): {tx_hash_str}")
 
-            # Wait for receipt
+            # Wait for receipt (pass bytes hash for reliability)
             receipt = w3.eth.wait_for_transaction_receipt(
-                tx_hash_str,
+                tx_hash_bytes,
                 timeout=self.config.execution.transaction_timeout_seconds,
             )
 
