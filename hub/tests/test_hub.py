@@ -9,10 +9,13 @@ Run with: pytest hub/tests/test_hub.py -v --tb=short --asyncio-mode=auto
 
 import asyncio
 import pytest
+import subprocess
 import sys
 import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+sys.path.insert(0, PROJECT_ROOT)
 
 from hub.registry import ModuleRegistry, ModuleInfo, ModuleStatus
 from hub.recon_coordinator import ReconCoordinator, ReconResult
@@ -219,34 +222,25 @@ class TestCLIIntegration:
     """Tests that main.py --hub dispatching works."""
 
     def test_hub_status_exit_code(self):
-        import subprocess
         result = subprocess.run(
             [sys.executable, "main.py", "--hub", "status"],
-            capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))
-            )),
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
         )
         assert result.returncode == 0
         assert "CRYO MODULE REGISTRY" in result.stdout
 
     def test_hub_invalid_strategy_exit_code(self):
-        import subprocess
         result = subprocess.run(
             [sys.executable, "main.py", "--hub", "bogus"],
-            capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))
-            )),
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
         )
         assert result.returncode == 1
         assert "Valid strategies" in result.stdout
 
     def test_hub_recon_exit_code(self):
-        import subprocess
         result = subprocess.run(
             [sys.executable, "main.py", "--hub", "recon"],
-            capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))
-            )),
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
         )
         assert result.returncode == 0
         assert "RECON SWEEP REPORT" in result.stdout
