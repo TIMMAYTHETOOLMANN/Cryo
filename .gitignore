@@ -27,3 +27,16 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 *.pyo
+
+# Runtime logs
+*.log
+
+# Runtime data artifacts
+confirmed_profits.json
+profit_ledger.json
+targets.json
+quick_scan_results.json
+.deploy_pid
+
+# Pytest cache
+.pytest_cache/
