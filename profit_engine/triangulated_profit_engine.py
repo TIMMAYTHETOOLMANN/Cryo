@@ -200,6 +200,11 @@ class TriangulatedProfitEngine:
         """
         Core pipeline: receive opportunity → validate → size → route → execute.
         This is called by the scanner for every detected opportunity.
+
+        Enhancements:
+        - Uses execution feedback to deprioritize failing vector/chain/protocol combos
+        - Queues gas-rejected opportunities for retry when gas drops
+        - Preserves confidence scores in execution metadata
         """
         self.opportunities_received += 1
 
@@ -213,9 +218,17 @@ class TriangulatedProfitEngine:
                 self.opportunities_skipped += 1
                 return
 
-            # ── Step 2: Capital Multiplier position sizing ──
+            # ── Step 1b: Execution feedback check ──
+            # If this vector+chain+protocol has a high failure rate, raise the confidence bar
             opp_type = signal.metadata.get('vector', signal.signal_type.value)
             protocol = signal.metadata.get('protocol', 'unknown')
+            feedback_score = self.scanner.get_feedback_score(opp_type, signal.chain_id, protocol)
+            if feedback_score < 0.3 and signal.confidence < 0.5:
+                # High failure rate AND low confidence → skip
+                self.opportunities_skipped += 1
+                return
+
+            # ── Step 2: Capital Multiplier position sizing ──
             position_size = self.capital_multiplier.get_position_size(
                 opp_type, signal.chain_id, protocol, signal.net_profit_usd
             )
@@ -247,12 +260,21 @@ class TriangulatedProfitEngine:
 
             final_profit = signal.gross_profit_usd - total_cost
             if final_profit < 0.01:  # Accept anything net-positive
+                # Queue for gas retry in case gas drops later
+                if final_profit > -5.0 and signal.gross_profit_usd > 1.0:
+                    self.scanner.queue_gas_retry(signal)
                 self.opportunities_skipped += 1
                 return
 
             # ── Step 5: Build execution request ──
             exec_type = self._map_signal_to_exec_type(signal.signal_type)
+
+            # Apply feedback-adjusted priority: boost for high-success combos, penalize low ones
             priority = self._compute_priority(signal)
+            if feedback_score > 0.8:
+                priority = min(10, priority + 1)  # Boost proven combos
+            elif feedback_score < 0.4:
+                priority = max(1, priority - 1)  # Penalize failing combos
 
             # Liquidation requests require a valid target_contract and user address;
             # preemptive/oracle signals lack these and must be skipped.
@@ -283,6 +305,8 @@ class TriangulatedProfitEngine:
                     'expected_profit_usd': final_profit,
                     'phase': self.ledger.current_phase.value,
                     'health_factor': getattr(signal, 'health_factor', 0),
+                    'confidence': signal.confidence,
+                    'feedback_score': feedback_score,
                 },
             )
 
@@ -292,7 +316,7 @@ class TriangulatedProfitEngine:
             self.consecutive_errors = 0
 
             print(f"   🎯 [{opp_type}] chain={signal.chain_id} profit=${final_profit:.2f} "
-                  f"conf={signal.confidence:.0%} pri={priority}")
+                  f"conf={signal.confidence:.0%} pri={priority} fb={feedback_score:.0%}")
 
         except Exception as e:
             self.consecutive_errors += 1
@@ -305,7 +329,8 @@ class TriangulatedProfitEngine:
 
     async def _handle_execution_result(self, result: ExecutionResult):
         """
-        Handle completed execution — update ledger, heat map, multiplier.
+        Handle completed execution — update ledger, heat map, multiplier,
+        and feed outcome back to scanner for closed-loop learning.
         """
         try:
             is_success = result.status == ExecutionStatus.CONFIRMED
@@ -360,6 +385,15 @@ class TriangulatedProfitEngine:
                 roi_percent=entry.roi_percent,
                 competition=metadata.get('competition_estimate', 0.5),
                 execution_time_ms=entry.execution_time_ms,
+            )
+
+            # ── Closed-Loop Feedback to Scanner ──
+            self.scanner.record_execution_outcome(
+                vector=opp_type,
+                chain_id=chain_id,
+                protocol=protocol,
+                success=is_success,
+                profit_usd=profit_usd,
             )
 
             # ── Update Flash Loan Router feedback ──
@@ -549,9 +583,14 @@ class TriangulatedProfitEngine:
         print(f"  Opportunities Received:  {self.opportunities_received}")
         print(f"  Opportunities Executed:  {self.opportunities_executed}")
         print(f"  Opportunities Skipped:   {self.opportunities_skipped}")
+        print(f"  Recon Phase Active:      {self.scanner._recon_phase_active}")
+        print(f"  Gas Retry Queue:         {len(self.scanner._gas_retry_queue)}")
+        print(f"  Feedback Combos Tracked: {len(self.scanner._execution_feedback)}")
         for vector, stats in self.scanner.vector_stats.items():
             if stats['found'] > 0:
-                print(f"    {vector}: found={stats['found']}")
+                sr = stats.get('success_rate', 1.0)
+                print(f"    {vector}: found={stats['found']} exec={stats['executed']} "
+                      f"fail={stats.get('failures', 0)} rate={sr:.0%}")
 
         # Flash Loan Router
         fl_status = self.flash_loan_router.status()
