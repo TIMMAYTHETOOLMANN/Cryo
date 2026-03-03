@@ -1506,7 +1506,7 @@ class TestLiquidationExecutorValidation:
         assert await executor.validate_request(request) is True
 
 
-class TestOpportunitySKipIncompleteSignals:
+class TestOpportunitySkipIncompleteSignals:
     """Validates that signals without required fields are skipped."""
 
     @pytest.mark.asyncio

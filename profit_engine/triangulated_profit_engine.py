@@ -254,12 +254,10 @@ class TriangulatedProfitEngine:
             exec_type = self._map_signal_to_exec_type(signal.signal_type)
             priority = self._compute_priority(signal)
 
-            # Liquidation requests require a valid target_contract and user address
+            # Liquidation requests require a valid target_contract and user address;
+            # preemptive/oracle signals lack these and must be skipped.
             if exec_type == ExecutionType.LIQUIDATION:
-                if not signal.target_contract:
-                    self.opportunities_skipped += 1
-                    return
-                if not signal.metadata.get('user'):
+                if not signal.target_contract or not signal.metadata.get('user'):
                     self.opportunities_skipped += 1
                     return
 

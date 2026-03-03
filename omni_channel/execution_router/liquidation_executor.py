@@ -356,8 +356,11 @@ class LiquidationExecutor(ExecutionInterface):
 
     @staticmethod
     def _is_valid_address(addr: Any) -> bool:
-        """Check if addr is a non-empty hex address string."""
-        if not isinstance(addr, str) or len(addr) < 2:
+        """Check if addr is a non-empty string that Web3 can parse as an address.
+        The quick length pre-check avoids calling into Web3 for obviously bad inputs
+        (None, empty string, bare '0x'); Web3.to_checksum_address handles full
+        format/length validation."""
+        if not isinstance(addr, str) or len(addr) < 3:
             return False
         try:
             Web3.to_checksum_address(addr)
