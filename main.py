@@ -353,6 +353,9 @@ Examples:
   python main.py --hub ops_target_acquire  # Target acquisition sweep
   python main.py --hub ops_system_check    # System health check
   python main.py --hub ops_phase2_activate # Activate Phase 2 modules
+  python main.py --fire parse "FlashLoan(x) + Swap(y)"  # Parse FIRE script
+  python main.py --fire compile "FlashLoan(x) + Swap(y)" # Compile FIRE script
+  python main.py --fire registry                          # List FIRE operations
         """,
     )
     parser.add_argument(
@@ -383,7 +386,63 @@ Examples:
              'monitor, ops_full_recon, ops_target_acquire, ops_system_check, '
              'ops_phase2_activate',
     )
+    parser.add_argument(
+        '--fire', type=str, nargs='*', default=None,
+        metavar='COMMAND',
+        help='FIRE engine commands: registry, parse <script>, compile <script>',
+    )
     return parser.parse_args()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  FIRE ENGINE HANDLER
+# ════════════════════════════════════════════════════════════════════
+
+def _handle_fire_command(fire_args):
+    """Handle --fire CLI commands."""
+    import json
+    from fire_engine import OperationRegistry, FireParser, Compiler
+
+    if not fire_args or fire_args[0] == "registry":
+        # List all registered operations
+        registry = OperationRegistry()
+        for proto in ("aave_v3", "uniswap_v2", "compound_v2"):
+            registry.register_protocol_operations(proto)
+        print(f"\n  FIRE Operation Registry — {registry.count} operations\n")
+        for op in registry.list_all():
+            print(f"    {op.id:40s} {op.description}")
+        return 0
+
+    command = fire_args[0]
+    script = " ".join(fire_args[1:]) if len(fire_args) > 1 else ""
+
+    if command == "parse":
+        if not script:
+            print("  Usage: --fire parse <script>")
+            return 1
+        parser = FireParser()
+        ast = parser.parse(script)
+        print(f"\n  Parsed AST:\n    {ast!r}\n")
+        return 0
+
+    if command == "compile":
+        if not script:
+            print("  Usage: --fire compile <script>")
+            return 1
+        registry = OperationRegistry()
+        for proto in ("aave_v3", "uniswap_v2", "compound_v2"):
+            registry.register_protocol_operations(proto)
+        parser = FireParser()
+        compiler = Compiler(registry)
+        ast = parser.parse(script)
+        plan = compiler.compile(ast)
+        print(f"\n  Compiled Plan ({plan.step_count} steps, ~{plan.total_gas_estimate} gas):\n")
+        print(json.dumps(plan.to_dict(), indent=2))
+        return 0
+
+    print(f"  Unknown FIRE command: {command}")
+    print("  Available: registry, parse, compile")
+    return 1
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -392,6 +451,10 @@ Examples:
 
 async def async_main():
     args = parse_args()
+
+    # ── FIRE Engine ─────────────────────────────────────────────────
+    if args.fire is not None:
+        return _handle_fire_command(args.fire)
 
     # ── Hub (consolidated command center) ───────────────────────────
     if args.hub is not None:
