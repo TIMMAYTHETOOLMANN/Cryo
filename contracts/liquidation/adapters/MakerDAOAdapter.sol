@@ -27,10 +27,12 @@ interface IMakerDog {
 ///      so the "collateral seized" is the auction incentive (tip).
 contract MakerDAOAdapter is ILiquidationAdapter {
     IMakerDog public immutable DOG;
+    bytes32 public immutable ILK;
 
-    constructor(address _dog) {
+    constructor(address _dog, bytes32 _ilk) {
         require(_dog != address(0), "Zero dog");
         DOG = IMakerDog(_dog);
+        ILK = _ilk;
     }
 
     /// @inheritdoc ILiquidationAdapter
@@ -57,10 +59,7 @@ contract MakerDAOAdapter is ILiquidationAdapter {
         uint256 before = IERC20(debtAsset).balanceOf(address(this));
 
         // Initiate the auction — keeper reward is sent to this contract
-        // The ilk is encoded as a bytes32 from the adapter key
-        // For simplicity, we use a default ilk (ETH-A) — in production,
-        // the ilk would be passed via the adapter key mapping
-        DOG.bark(bytes32("ETH-A"), user, address(this));
+        DOG.bark(ILK, user, address(this));
 
         // Calculate keeper reward received
         collateralSeized = IERC20(debtAsset).balanceOf(address(this)) - before;

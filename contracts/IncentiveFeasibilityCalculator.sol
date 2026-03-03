@@ -60,8 +60,8 @@ contract IncentiveFeasibilityCalculator {
     /// @dev Set to $10 as a baseline; configurable per deployment.
     uint256 public constant MIN_INCENTIVE_USD = 10e18;
 
-    /// @notice Gas cost buffer (120% = 20% extra for price volatility).
-    uint256 public constant GAS_BUFFER_BPS = 12000; // 120% in basis points (100% + 20%)
+    /// @notice Gas cost buffer: 120% as basis points (1.2x multiplier for price volatility).
+    uint256 public constant GAS_BUFFER_BPS = 12000;
 
     // ── Core Calculation ───────────────────────────────────────────────────
 
@@ -149,21 +149,21 @@ contract IncentiveFeasibilityCalculator {
     }
 
     /// @notice Check if collateral value covers debt plus fees (bad debt detection).
-    /// @dev Returns false for "bad debt" situations where collateral < debt + fees.
+    /// @dev Returns true for "bad debt" situations where collateral < debt + fees.
     /// @param collateralUsd18 Total collateral value in USD (1e18-scaled)
     /// @param debtUsd18 Total debt value in USD (1e18-scaled)
     /// @param flashLoanFeeBps Flash loan fee in BPS
     /// @param gasCostUsd18 Gas cost in USD (1e18-scaled)
-    /// @return isSolvent True if collateral covers all costs
+    /// @return isBad True if position is bad debt (collateral cannot cover costs)
     function isBadDebt(
         uint256 collateralUsd18,
         uint256 debtUsd18,
         uint256 flashLoanFeeBps,
         uint256 gasCostUsd18
-    ) external pure returns (bool isSolvent) {
+    ) external pure returns (bool isBad) {
         uint256 flashFee = (debtUsd18 * flashLoanFeeBps) / 10000;
         uint256 totalCost = debtUsd18 + flashFee + gasCostUsd18;
-        isSolvent = collateralUsd18 >= totalCost;
+        isBad = collateralUsd18 < totalCost;
     }
 
     // ── Internal Helpers ───────────────────────────────────────────────────

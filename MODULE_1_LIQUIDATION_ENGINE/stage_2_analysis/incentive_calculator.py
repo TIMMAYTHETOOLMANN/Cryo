@@ -156,8 +156,8 @@ class IncentiveFeasibilityCalculator:
         )
 
         # 2. Collateral seized USD = debt_repay_usd * (1 + bonus%)
-        #    In cross-asset liquidations, the protocol converts debt to collateral
-        #    at oracle prices, so the bonus applies to the USD value.
+        #    This is a simplified calculation: the protocol converts debt to
+        #    collateral at oracle prices and adds the bonus on the USD value.
         bonus_multiplier = Decimal("1") + Decimal(params.liquidation_bonus_bps) / Decimal("10000")
         result.collateral_seized_usd = result.debt_repay_usd * bonus_multiplier
 

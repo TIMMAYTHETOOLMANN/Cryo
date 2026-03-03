@@ -244,23 +244,23 @@ contract IncentiveFeasibilityCalculatorTest is Test {
     // isBadDebt
     // -----------------------------------------------------------------------
 
-    function testIsBadDebt_Solvent() public view {
-        bool solvent = calc.isBadDebt(
+    function testIsBadDebt_NotBadDebt() public view {
+        bool isBad = calc.isBadDebt(
             15000e18,   // $15,000 collateral
             10000e18,   // $10,000 debt
             5,          // 0.05% flash fee
             2e18        // $2 gas
         );
-        assertTrue(solvent); // 15000 > 10000 + 0.5 + 2
+        assertFalse(isBad); // 15000 > 10000 + 0.5 + 2 → not bad debt
     }
 
-    function testIsBadDebt_Insolvent() public view {
-        bool solvent = calc.isBadDebt(
+    function testIsBadDebt_IsBadDebt() public view {
+        bool isBad = calc.isBadDebt(
             9000e18,    // $9,000 collateral
             10000e18,   // $10,000 debt
             5,          // 0.05% flash fee
             2e18        // $2 gas
         );
-        assertFalse(solvent); // 9000 < 10000 + 0.5 + 2
+        assertTrue(isBad); // 9000 < 10000 + 0.5 + 2 → is bad debt
     }
 }
