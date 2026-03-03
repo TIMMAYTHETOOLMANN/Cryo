@@ -255,7 +255,8 @@ class TestFireParser:
     def test_parse_hex_literal(self):
         ast = self.parser.parse("Transfer(0xDEAD, 0xBEEF)")
         assert ast.node_type == NodeType.ATOMIC
-        assert "0xDEAD" in str(ast.params.values())
+        assert ast.params["arg0"] == "0xDEAD"
+        assert ast.params["arg1"] == "0xBEEF"
 
     def test_parse_numeric_args(self):
         ast = self.parser.parse("Transfer(100, 200)")
@@ -448,7 +449,7 @@ class TestOffChainExecutor:
         encoded = executor.encode_plan_steps(plan)
         assert len(encoded) == 1
         assert encoded[0]["target"] == "0x" + "2" * 40
-        assert encoded[0]["data"] == "010203"
+        assert encoded[0]["data"] == "0x010203"
 
     def test_estimate_gas(self):
         executor = OffChainExecutor(executor_address="0x" + "1" * 40)

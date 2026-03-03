@@ -231,10 +231,7 @@ contract FinancialExecutorTest is Test {
         Step[] memory steps = new Step[](1);
         steps[0] = Step({
             target: address(profitSim),
-            data: abi.encodeWithSelector(
-                ProfitSimulator.sendProfit.selector,
-                payable(address(executor))
-            ),
+            data: abi.encodeCall(ProfitSimulator.sendProfit, (payable(address(executor)))),
             value: 0,
             allowFailure: false
         });
@@ -245,6 +242,7 @@ contract FinancialExecutorTest is Test {
 
         // Profit should have been forwarded to owner
         assertGt(executor.totalProfit(), 0);
+        assertGt(ownerBalAfter, ownerBalBefore);
     }
 
     function testMultiplePlansTrackStats() public {

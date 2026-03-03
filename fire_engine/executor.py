@@ -79,7 +79,7 @@ class OffChainExecutor:
         for step in plan.steps:
             encoded_steps.append({
                 "target": step.target_contract or "0x" + "0" * 40,
-                "data": step.calldata.hex() if step.calldata else "0x",
+                "data": ("0x" + step.calldata.hex()) if step.calldata else "0x",
                 "value": step.value,
                 "allowFailure": step.allow_failure,
             })
