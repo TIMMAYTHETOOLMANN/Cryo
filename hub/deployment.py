@@ -56,6 +56,11 @@ class DeploymentStrategy(Enum):
     PHASE_3 = "phase_3"
     FULL_PIPELINE = "full_pipeline"
     MONITOR = "monitor"
+    # Tactical operations
+    OPS_FULL_RECON = "ops_full_recon"
+    OPS_TARGET_ACQUIRE = "ops_target_acquire"
+    OPS_SYSTEM_CHECK = "ops_system_check"
+    OPS_PHASE2_ACTIVATE = "ops_phase2_activate"
 
 
 # ── Deployer ──────────────────────────────────────────────────────
@@ -119,6 +124,22 @@ async def deploy(
     # ── MONITOR ───────────────────────────────────────────────
     if strategy == DeploymentStrategy.MONITOR:
         return await _run_monitor()
+
+    # ── TACTICAL OPS ──────────────────────────────────────────
+    _ops_map = {
+        DeploymentStrategy.OPS_FULL_RECON:      "full_recon",
+        DeploymentStrategy.OPS_TARGET_ACQUIRE:   "target_acquire",
+        DeploymentStrategy.OPS_SYSTEM_CHECK:     "system_check",
+        DeploymentStrategy.OPS_PHASE2_ACTIVATE:  "phase2_activate",
+    }
+    if strategy in _ops_map:
+        from .tactical_ops import TacticalOps
+        ops = TacticalOps(registry)
+        report = await ops.execute(
+            _ops_map[strategy], chain_ids=chain_ids, config=config,
+        )
+        TacticalOps.print_report(report)
+        return 0 if report.failed == 0 else 1
 
     logger.error("Unknown strategy: %s", strategy)
     return 1

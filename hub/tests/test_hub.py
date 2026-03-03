@@ -195,6 +195,8 @@ class TestDeploymentStrategy:
         expected = {
             "status", "preflight", "recon", "scan_only",
             "phase_1", "phase_2", "phase_3", "full_pipeline", "monitor",
+            "ops_full_recon", "ops_target_acquire", "ops_system_check",
+            "ops_phase2_activate",
         }
         actual = {s.value for s in DeploymentStrategy}
         assert expected == actual
@@ -244,3 +246,309 @@ class TestCLIIntegration:
         )
         assert result.returncode == 0
         assert "RECON SWEEP REPORT" in result.stdout
+
+    def test_hub_ops_system_check_exit_code(self):
+        result = subprocess.run(
+            [sys.executable, "main.py", "--hub", "ops_system_check"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        assert result.returncode == 0
+        assert "TACTICAL OPERATION" in result.stdout
+
+    def test_hub_ops_full_recon_exit_code(self):
+        result = subprocess.run(
+            [sys.executable, "main.py", "--hub", "ops_full_recon"],
+            capture_output=True, text=True, cwd=PROJECT_ROOT,
+        )
+        assert result.returncode == 0
+        assert "FULL_RECON" in result.stdout
+
+
+# ============================================================================
+# Signal Adapter Tests
+# ============================================================================
+
+class TestSignalAdapter:
+    """Tests for the bidirectional signal translation layer."""
+
+    def _make_m9_signal(self, **overrides):
+        from MODULE_9_OMNI_SCOPE.data_bus import (
+            OpportunitySignal as M9Signal,
+            SignalType as M9Type,
+            SignalSource as M9Src,
+        )
+        defaults = dict(
+            signal_type=M9Type.PENDING_LIQUIDATION,
+            source=M9Src.MEMPOOL_RADAR,
+            chain_id=1,
+            confidence=0.85,
+            estimated_profit_usd=5000.0,
+            gas_cost_estimate_usd=50.0,
+            urgency_seconds=12.0,
+            target_protocol="aave_v3",
+            target_user="0x" + "ab" * 20,
+            target_contract="0x" + "cd" * 20,
+            health_factor=0.95,
+            quality_score=0.92,
+            routed_to="liquidation_engine",
+        )
+        defaults.update(overrides)
+        return M9Signal(**defaults)
+
+    def _make_omni_signal(self, **overrides):
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal as OmniSignal,
+            SignalType as OmniType,
+            SignalSource as OmniSrc,
+        )
+        defaults = dict(
+            signal_type=OmniType.LIQUIDATION,
+            source_module=OmniSrc.MEMPOOL_RADAR,
+            chain_id=1,
+            expected_value_usd=5000.0,
+            confidence=0.85,
+            urgency_score=80.0,
+            target_contract="0x" + "cd" * 20,
+            user_address="0x" + "ab" * 20,
+            health_factor=0.95,
+        )
+        defaults.update(overrides)
+        return OmniSignal(**defaults)
+
+    def test_m9_to_omni_preserves_profit(self):
+        from hub.signal_adapter import m9_to_omni
+        m9 = self._make_m9_signal(estimated_profit_usd=1234.0)
+        omni = m9_to_omni(m9)
+        assert omni.expected_value_usd == 1234.0
+
+    def test_m9_to_omni_preserves_confidence(self):
+        from hub.signal_adapter import m9_to_omni
+        m9 = self._make_m9_signal(confidence=0.73)
+        omni = m9_to_omni(m9)
+        assert omni.confidence == 0.73
+
+    def test_m9_to_omni_preserves_quality_score_in_metadata(self):
+        from hub.signal_adapter import m9_to_omni
+        m9 = self._make_m9_signal(quality_score=0.92)
+        omni = m9_to_omni(m9)
+        assert omni.metadata["m9_quality_score"] == 0.92
+
+    def test_m9_to_omni_preserves_routed_to_in_metadata(self):
+        from hub.signal_adapter import m9_to_omni
+        m9 = self._make_m9_signal(routed_to="liquidation_engine")
+        omni = m9_to_omni(m9)
+        assert omni.metadata["m9_routed_to"] == "liquidation_engine"
+
+    def test_m9_to_omni_maps_type_liquidation(self):
+        from hub.signal_adapter import m9_to_omni
+        from MODULE_9_OMNI_SCOPE.data_bus import SignalType as M9Type
+        m9 = self._make_m9_signal(signal_type=M9Type.PENDING_LIQUIDATION)
+        omni = m9_to_omni(m9)
+        assert omni.signal_type.value == "liquidation"
+
+    def test_m9_to_omni_maps_type_arbitrage(self):
+        from hub.signal_adapter import m9_to_omni
+        from MODULE_9_OMNI_SCOPE.data_bus import SignalType as M9Type
+        m9 = self._make_m9_signal(signal_type=M9Type.ARBITRAGE)
+        omni = m9_to_omni(m9)
+        assert omni.signal_type.value == "arbitrage"
+
+    def test_m9_to_omni_maps_type_cross_chain(self):
+        from hub.signal_adapter import m9_to_omni
+        from MODULE_9_OMNI_SCOPE.data_bus import SignalType as M9Type
+        m9 = self._make_m9_signal(signal_type=M9Type.CROSS_CHAIN_ARB)
+        omni = m9_to_omni(m9)
+        assert omni.signal_type.value == "cross_chain_arb"
+
+    def test_m9_to_omni_maps_type_bridge_imbalance(self):
+        from hub.signal_adapter import m9_to_omni
+        from MODULE_9_OMNI_SCOPE.data_bus import SignalType as M9Type
+        m9 = self._make_m9_signal(signal_type=M9Type.BRIDGE_IMBALANCE)
+        omni = m9_to_omni(m9)
+        assert omni.signal_type.value == "cross_chain_arb"
+
+    def test_m9_to_omni_sets_execution_module(self):
+        from hub.signal_adapter import m9_to_omni
+        from omni_channel.data_lake.data_models import ExecutionModule
+        m9 = self._make_m9_signal(routed_to="liquidation_engine")
+        omni = m9_to_omni(m9)
+        assert omni.routed_to == ExecutionModule.LIQUIDATION_ENGINE
+
+    def test_m9_to_omni_net_profit(self):
+        from hub.signal_adapter import m9_to_omni
+        m9 = self._make_m9_signal(
+            estimated_profit_usd=500.0,
+            gas_cost_estimate_usd=20.0,
+        )
+        omni = m9_to_omni(m9)
+        assert omni.net_profit_usd == 480.0
+
+    def test_omni_to_m9_preserves_profit(self):
+        from hub.signal_adapter import omni_to_m9
+        omni = self._make_omni_signal(expected_value_usd=3000.0)
+        m9 = omni_to_m9(omni)
+        assert m9.estimated_profit_usd == 3000.0
+
+    def test_omni_to_m9_preserves_confidence(self):
+        from hub.signal_adapter import omni_to_m9
+        omni = self._make_omni_signal(confidence=0.65)
+        m9 = omni_to_m9(omni)
+        assert m9.confidence == 0.65
+
+    def test_omni_to_m9_preserves_signal_id(self):
+        from hub.signal_adapter import omni_to_m9
+        omni = self._make_omni_signal()
+        m9 = omni_to_m9(omni)
+        assert m9.metadata["omni_signal_id"] == omni.signal_id
+
+    def test_omni_to_m9_maps_type(self):
+        from hub.signal_adapter import omni_to_m9
+        from omni_channel.data_lake.data_models import SignalType as OmniType
+        omni = self._make_omni_signal(signal_type=OmniType.ARBITRAGE)
+        m9 = omni_to_m9(omni)
+        assert m9.signal_type.value == "arbitrage"
+
+    def test_roundtrip_m9_to_omni_to_m9(self):
+        from hub.signal_adapter import m9_to_omni, omni_to_m9
+        m9_orig = self._make_m9_signal(
+            estimated_profit_usd=7777.0,
+            confidence=0.91,
+            chain_id=42161,
+        )
+        omni = m9_to_omni(m9_orig)
+        m9_back = omni_to_m9(omni)
+        assert m9_back.estimated_profit_usd == 7777.0
+        assert m9_back.confidence == 0.91
+        assert m9_back.chain_id == 42161
+
+    def test_signal_bridge_translate(self):
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from hub.signal_adapter import SignalBridge
+        bus = DataBus()
+        bridge = SignalBridge()
+        bridge.attach(bus)
+
+        bus.publish(self._make_m9_signal(estimated_profit_usd=100.0))
+        bus.publish(self._make_m9_signal(estimated_profit_usd=200.0))
+
+        translated = bridge.consume(limit=10)
+        assert len(translated) == 2
+        # Sorted by profit desc
+        assert translated[0].expected_value_usd == 200.0
+        assert translated[1].expected_value_usd == 100.0
+
+    def test_signal_bridge_stats(self):
+        from MODULE_9_OMNI_SCOPE.data_bus import DataBus
+        from hub.signal_adapter import SignalBridge
+        bus = DataBus()
+        bridge = SignalBridge()
+        bridge.attach(bus)
+
+        bus.publish(self._make_m9_signal())
+        stats = bridge.get_stats()
+        assert stats["signals_received"] == 1
+        assert stats["signals_translated"] == 1
+        assert stats["translation_errors"] == 0
+
+
+# ============================================================================
+# Tactical Ops Tests
+# ============================================================================
+
+class TestTacticalOps:
+    """Tests for step-by-step tactical operations."""
+
+    @pytest.mark.asyncio
+    async def test_available_operations(self):
+        from hub.tactical_ops import TacticalOps
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        available = ops.available_operations
+        assert "full_recon" in available
+        assert "target_acquire" in available
+        assert "system_check" in available
+        assert "phase2_activate" in available
+
+    @pytest.mark.asyncio
+    async def test_execute_unknown_op_raises(self):
+        from hub.tactical_ops import TacticalOps
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        with pytest.raises(ValueError, match="Unknown operation"):
+            await ops.execute("nonexistent_op")
+
+    @pytest.mark.asyncio
+    async def test_system_check_returns_report(self):
+        from hub.tactical_ops import TacticalOps, OpReport
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        report = await ops.execute("system_check")
+        assert isinstance(report, OpReport)
+        assert report.operation == "system_check"
+        assert len(report.steps) >= 3
+        assert report.total_duration_s >= 0
+
+    @pytest.mark.asyncio
+    async def test_system_check_step_names(self):
+        from hub.tactical_ops import TacticalOps
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        report = await ops.execute("system_check")
+        step_names = [s.name for s in report.steps]
+        assert "registry_status" in step_names
+        assert "log_analysis" in step_names
+        assert "process_check" in step_names
+
+    @pytest.mark.asyncio
+    async def test_full_recon_returns_report(self):
+        from hub.tactical_ops import TacticalOps
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        report = await ops.execute("full_recon")
+        assert report.operation == "full_recon"
+        assert len(report.steps) >= 4  # init_recon, init_detect, init_analysis, sweep, rank
+        assert report.passed >= 4
+
+    @pytest.mark.asyncio
+    async def test_target_acquire_returns_report(self):
+        from hub.tactical_ops import TacticalOps
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        report = await ops.execute("target_acquire")
+        assert report.operation == "target_acquire"
+        assert len(report.steps) >= 3
+
+    @pytest.mark.asyncio
+    async def test_phase2_activate_returns_report(self):
+        from hub.tactical_ops import TacticalOps
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        report = await ops.execute("phase2_activate")
+        assert report.operation == "phase2_activate"
+        step_names = [s.name for s in report.steps]
+        assert "phase2_summary" in step_names
+
+    @pytest.mark.asyncio
+    async def test_print_report(self, capsys):
+        from hub.tactical_ops import TacticalOps
+        reg = ModuleRegistry().discover()
+        ops = TacticalOps(reg)
+        report = await ops.execute("system_check")
+        TacticalOps.print_report(report)
+        out = capsys.readouterr().out
+        assert "TACTICAL OPERATION" in out
+        assert "SYSTEM_CHECK" in out
+
+    @pytest.mark.asyncio
+    async def test_deploy_ops_system_check(self, capsys):
+        rc = await deploy(DeploymentStrategy.OPS_SYSTEM_CHECK)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "TACTICAL OPERATION" in out
+
+    @pytest.mark.asyncio
+    async def test_deploy_ops_full_recon(self, capsys):
+        rc = await deploy(DeploymentStrategy.OPS_FULL_RECON)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "FULL_RECON" in out
