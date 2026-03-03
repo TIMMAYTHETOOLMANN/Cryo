@@ -85,8 +85,8 @@ class TestNonConfiguredDetection:
         """Missing RPC URLs are reported for all chains."""
         errors = empty_config.validate()
         rpc_errors = [e for e in errors if "RPC" in e or "No RPC" in e]
-        # Should have errors for all 8 chains
-        assert len(rpc_errors) == 8
+        # Should have errors for all supported chains
+        assert len(rpc_errors) == len(_RPC_ENV_MAP)
 
     def test_empty_config_reports_missing_treasury(self, empty_config):
         """Missing treasury address is reported."""
