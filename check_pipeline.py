@@ -60,5 +60,5 @@ try:
         result = subprocess.run(["pgrep", "-a", "python"], capture_output=True, text=True)
         py_procs = [l for l in result.stdout.strip().split("\n") if l]
     print(f"Python processes running: {len(py_procs)}")
-except Exception:
-    print("Python processes running: unknown (could not query)")
+except (FileNotFoundError, subprocess.SubprocessError, OSError) as e:
+    print(f"Python processes running: unknown ({e})")

@@ -97,10 +97,16 @@ class SituationAssessor:
     execution phase.  This is the "brain" that gates deployment.
     """
 
+    # Phase transition thresholds (USD cumulative profit)
+    PHASE_2_THRESHOLD = 2_500
+    PHASE_3_THRESHOLD = 45_000
+
     def __init__(self):
         self.has_rpc = bool(os.getenv('MAINNET_RPC_URL') or os.getenv('ETH_RPC_URL'))
         self.has_private_key = bool(os.getenv('PRIVATE_KEY'))
         self.execution_enabled = os.getenv('EXECUTION_ENABLED', 'false').lower() == 'true'
+        # TREASURY_ADDRESS should be set in .env; fallback is the
+        # project-default treasury used across deploy.py / run_until_profit.py.
         self.treasury = os.getenv(
             'TREASURY_ADDRESS',
             '0xB323C6E32C6efe28FB9cfB1A83F4071c544eA1e4',
@@ -124,9 +130,9 @@ class SituationAssessor:
 
     def recommend_phase(self) -> int:
         """Return the recommended phase number (1, 2, or 3)."""
-        if self.cumulative_profit >= 45_000:
+        if self.cumulative_profit >= self.PHASE_3_THRESHOLD:
             return 3
-        if self.cumulative_profit >= 2_500:
+        if self.cumulative_profit >= self.PHASE_2_THRESHOLD:
             return 2
         return 1
 
@@ -217,7 +223,7 @@ async def run_phase(phase: int, scan_only: bool = False):
     if phase == 1:
         # Maximum aggression — accept any net-positive trade
         config['scanner']['min_profit_usd'] = 0.01
-        config['scanner']['min_confidence'] = 0.01
+        config['scanner']['min_confidence'] = 0.10
         config['scanner']['scan_interval'] = 2.0
         config['gas']['min_margin_percent'] = 0.01
         config['gas']['min_margin_usd'] = 0.01
