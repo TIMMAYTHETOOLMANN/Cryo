@@ -1425,6 +1425,213 @@ class TestMainnetDeploymentCalibration:
         assert executor.txs_fired == 0  # blocked by gas cap
 
 
+class TestLiquidationExecutorValidation:
+    """Validates address and metadata validation in LiquidationExecutor."""
+
+    def _make_executor(self):
+        """Create a LiquidationExecutor with a mock W3 provider."""
+        from unittest.mock import MagicMock
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        mock_w3 = MagicMock()
+        mock_w3.eth.chain_id = 1
+        executor = LiquidationExecutor({'PRIVATE_KEY': '0x' + 'aa' * 32})
+        executor._w3_providers[1] = mock_w3
+        return executor
+
+    def test_is_valid_address_accepts_valid(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert LiquidationExecutor._is_valid_address('0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2')
+
+    def test_is_valid_address_rejects_empty_string(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert not LiquidationExecutor._is_valid_address('')
+
+    def test_is_valid_address_rejects_none(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert not LiquidationExecutor._is_valid_address(None)
+
+    def test_is_valid_address_rejects_short_hex(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert not LiquidationExecutor._is_valid_address('0x')
+
+    @pytest.mark.asyncio
+    async def test_validate_rejects_empty_target_contract(self):
+        """Validation rejects requests with empty target_contract."""
+        from omni_channel.execution_router.execution_interface import ExecutionRequest, ExecutionType
+        executor = self._make_executor()
+        request = ExecutionRequest(
+            request_id='test-1',
+            execution_type=ExecutionType.LIQUIDATION,
+            chain_id=1,
+            opportunity_data={},
+            target_contract='',
+            calldata='0x',
+            metadata={'user': '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'},
+        )
+        assert await executor.validate_request(request) is False
+
+    @pytest.mark.asyncio
+    async def test_validate_rejects_missing_user(self):
+        """Validation rejects requests without a user address in metadata."""
+        from omni_channel.execution_router.execution_interface import ExecutionRequest, ExecutionType
+        executor = self._make_executor()
+        request = ExecutionRequest(
+            request_id='test-2',
+            execution_type=ExecutionType.LIQUIDATION,
+            chain_id=1,
+            opportunity_data={},
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            calldata='0x',
+            metadata={},
+        )
+        assert await executor.validate_request(request) is False
+
+    @pytest.mark.asyncio
+    async def test_validate_accepts_valid_liquidation_request(self):
+        """Validation accepts a well-formed liquidation request."""
+        from omni_channel.execution_router.execution_interface import ExecutionRequest, ExecutionType
+        executor = self._make_executor()
+        request = ExecutionRequest(
+            request_id='test-3',
+            execution_type=ExecutionType.LIQUIDATION,
+            chain_id=1,
+            opportunity_data={},
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            calldata='0x',
+            metadata={
+                'user': '0xA968eC40f51e842a9C71FbaaA906B029147469f0',
+                'expected_profit_usd': 100,
+            },
+        )
+        assert await executor.validate_request(request) is True
+
+
+class TestOpportunitySKipIncompleteSignals:
+    """Validates that signals without required fields are skipped."""
+
+    @pytest.mark.asyncio
+    async def test_handle_opportunity_skips_liquidation_without_target(self):
+        """Signals routed as LIQUIDATION but missing target_contract are skipped."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        # Patch heavy initialization
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        # Preemptive liquidation signal — has no target_contract and no user
+        sig = OpportunitySignal(
+            signal_id='test-preemptive',
+            signal_type=SignalType.ORACLE_UPDATE,
+            source_module=SignalSource.MEMPOOL_RADAR,
+            chain_id=1,
+            expected_value_usd=100.0,
+            gross_profit_usd=100.0,
+            confidence=0.5,
+            net_profit_usd=50.0,
+            estimated_cost_usd=5.0,
+            metadata={
+                'vector': 'preemptive_liquidation',
+                'oracle': '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419',
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+
+        # Should have been skipped — no target_contract
+        assert engine.opportunities_skipped == 1
+        assert engine.opportunities_executed == 0
+        engine.execution_manager.submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_opportunity_skips_liquidation_without_user(self):
+        """Signals routed as LIQUIDATION but missing user are skipped."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        # Has target_contract but no user in metadata
+        sig = OpportunitySignal(
+            signal_id='test-no-user',
+            signal_type=SignalType.VULNERABILITY,
+            source_module=SignalSource.STATIC_ANALYZER,
+            chain_id=1,
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            expected_value_usd=200.0,
+            gross_profit_usd=200.0,
+            confidence=0.65,
+            net_profit_usd=100.0,
+            estimated_cost_usd=10.0,
+            metadata={
+                'vector': 'undercollateralized_pool',
+                'protocol': 'compound_v3',
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+
+        assert engine.opportunities_skipped == 1
+        assert engine.opportunities_executed == 0
+        engine.execution_manager.submit.assert_not_called()
+
+
+class TestNFTVectorCountsOpportunities:
+    """Validates that NFT-backed loan vector increments its found counter."""
+
+    def test_nft_vector_key_exists(self):
+        """OpportunityScanner vector_stats has nft_backed_loan key."""
+        from unittest.mock import MagicMock
+        from profit_engine.opportunity_scanner import OpportunityScanner
+        gas_opt = MagicMock()
+        gas_opt.chain_states = {}
+        flash_router = MagicMock()
+        flash_router.providers = []
+        heat_map = MagicMock()
+        scanner = OpportunityScanner(gas_opt, flash_router, heat_map, {})
+        assert 'nft_backed_loan' in scanner.vector_stats
+        assert scanner.vector_stats['nft_backed_loan']['found'] == 0
+
+
 # ============================================================================
 # Run Tests
 # ============================================================================

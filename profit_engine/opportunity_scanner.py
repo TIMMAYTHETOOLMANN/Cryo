@@ -802,6 +802,7 @@ class OpportunityScanner:
                             continue
 
                         # Record observation for heat map even if we can't execute yet
+                        self.vector_stats['nft_backed_loan']['found'] += 1
                         self.heat_map.record_observation(
                             'nft_backed_loan', 1, protocol_name.lower(),
                             competition=0.1,  # Extremely low competition
