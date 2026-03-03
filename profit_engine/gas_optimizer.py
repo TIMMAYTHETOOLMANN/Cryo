@@ -53,6 +53,15 @@ class GasOptimizer:
     Dynamic gas management across all supported chains.
     """
 
+    # Competition-aware bidding thresholds (Enhancement 8)
+    COMPETITION_LOW_THRESHOLD = 0.3      # Below this: low competition
+    COMPETITION_HIGH_THRESHOLD = 0.7     # Above this: high competition
+    BID_PCT_LOW_COMPETITION = 0.05       # Max 5% of profit as priority fee
+    BID_PCT_MED_COMPETITION = 0.15       # Max 15%
+    BID_PCT_HIGH_COMPETITION = 0.40      # Max 40% (must-win)
+    CONGESTION_PREMIUM_HIGH = 1.2        # 20% premium during high congestion
+    CONGESTION_PREMIUM_EXTREME = 1.5     # 50% premium during extreme congestion
+
     # Gas unit estimates per operation type
     GAS_UNITS = {
         'liquidation': 350_000,
@@ -248,19 +257,40 @@ class GasOptimizer:
         competition_level: float,   # 0-1
     ) -> float:
         """
-        Compute optimal priority fee bid based on expected profit and competition.
-        Higher competition → bid more of the profit as priority fee.
+        Enhancement 8: Compute optimal priority fee bid based on expected profit,
+        competition level, and congestion.  Higher competition → bid more of the
+        profit as priority fee to win the block inclusion race.
+
+        Strategy:
+          - Low competition (<0.3): use base priority fee — save margin
+          - Medium competition (0.3-0.7): bid up to 15% of profit
+          - High competition (>0.7): bid up to 40% of profit
+          - Extreme congestion: add congestion premium
         Returns priority fee in gwei.
         """
         state = self.chain_states.get(chain_id)
         if not state:
             return 2.0
 
-        # Base bid = current priority
+        # Base bid = current network priority
         base_bid = state.current_priority_fee
 
-        # Willingness to pay up to 30% of profit as priority fee
-        max_bid_usd = expected_profit_usd * 0.30 * competition_level
+        # Tiered willingness to pay based on competition intensity
+        if competition_level < self.COMPETITION_LOW_THRESHOLD:
+            max_pct = self.BID_PCT_LOW_COMPETITION
+        elif competition_level < self.COMPETITION_HIGH_THRESHOLD:
+            max_pct = self.BID_PCT_MED_COMPETITION
+        else:
+            max_pct = self.BID_PCT_HIGH_COMPETITION
+
+        # Congestion premium: boost bid during high/extreme congestion
+        congestion_premium = 1.0
+        if state.congestion_level == 'high':
+            congestion_premium = self.CONGESTION_PREMIUM_HIGH
+        elif state.congestion_level == 'extreme':
+            congestion_premium = self.CONGESTION_PREMIUM_EXTREME
+
+        max_bid_usd = expected_profit_usd * max_pct * competition_level * congestion_premium
         gas_units = 350_000  # Average
         if state.eth_price_usd > 0 and gas_units > 0:
             max_bid_gwei = (max_bid_usd * 1e9) / (gas_units * state.eth_price_usd)

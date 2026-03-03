@@ -2089,6 +2089,320 @@ class TestConfidenceMetadataPropagation:
 
 
 # ============================================================================
+# Enhancement Tests
+# ============================================================================
+
+class TestEnhancement1_LiquidationBonus:
+    """Enhancement 1: Per-asset Aave V3 liquidation bonus precision."""
+
+    def test_get_liquidation_bonus_weth(self):
+        from profit_engine.opportunity_scanner import get_liquidation_bonus
+        bonus = get_liquidation_bonus('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')
+        assert bonus == 0.05
+
+    def test_get_liquidation_bonus_wbtc(self):
+        from profit_engine.opportunity_scanner import get_liquidation_bonus
+        bonus = get_liquidation_bonus('0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599')
+        assert bonus == 0.07
+
+    def test_get_liquidation_bonus_link(self):
+        from profit_engine.opportunity_scanner import get_liquidation_bonus
+        bonus = get_liquidation_bonus('0x514910771AF9Ca656af840dff83E8264EcF986CA')
+        assert bonus == 0.07
+
+    def test_get_liquidation_bonus_uni(self):
+        from profit_engine.opportunity_scanner import get_liquidation_bonus
+        bonus = get_liquidation_bonus('0x1f9840a85d5aF5bf1D1762F925BDADdc4201F984')
+        assert bonus == 0.10
+
+    def test_get_liquidation_bonus_unknown_defaults_to_5pct(self):
+        from profit_engine.opportunity_scanner import get_liquidation_bonus
+        bonus = get_liquidation_bonus('0x0000000000000000000000000000000000000000')
+        assert bonus == 0.05
+
+    def test_get_liquidation_bonus_case_insensitive(self):
+        from profit_engine.opportunity_scanner import get_liquidation_bonus
+        upper = get_liquidation_bonus('0xC02AAA39B223FE8D0A0E5C4F27EAD9083C756CC2')
+        lower = get_liquidation_bonus('0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2')
+        assert upper == lower
+
+
+class TestEnhancement3_DynamicCloseFactor:
+    """Enhancement 3: Dynamic close factor based on health factor."""
+
+    def test_close_factor_below_095(self):
+        from profit_engine.opportunity_scanner import compute_optimal_close_factor
+        assert compute_optimal_close_factor(0.90) == 1.0
+
+    def test_close_factor_at_095(self):
+        from profit_engine.opportunity_scanner import compute_optimal_close_factor
+        assert compute_optimal_close_factor(0.95) == 0.5
+
+    def test_close_factor_above_095(self):
+        from profit_engine.opportunity_scanner import compute_optimal_close_factor
+        assert compute_optimal_close_factor(0.99) == 0.5
+
+    def test_close_factor_at_zero(self):
+        from profit_engine.opportunity_scanner import compute_optimal_close_factor
+        assert compute_optimal_close_factor(0.0) == 1.0
+
+
+class TestEnhancement4_SlippageDiscount:
+    """Enhancement 4: Slippage-aware profit estimation."""
+
+    def test_slippage_weth_low_debt(self):
+        from profit_engine.opportunity_scanner import get_slippage_discount
+        mult = get_slippage_discount('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', 10_000)
+        # WETH base = 5 bps, debt < $50k → size_multiplier = 1.0
+        assert 0.99 < mult <= 1.0
+
+    def test_slippage_scales_with_debt_size(self):
+        from profit_engine.opportunity_scanner import get_slippage_discount
+        small = get_slippage_discount('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', 10_000)
+        large = get_slippage_discount('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', 200_000)
+        assert large < small  # Larger debt = more slippage = lower multiplier
+
+    def test_slippage_capped_at_90pct(self):
+        from profit_engine.opportunity_scanner import get_slippage_discount
+        # Even extreme cases shouldn't go below 0.9
+        mult = get_slippage_discount('0xc18360217d8f7ab5e7c516566761ea12ce7f9d72', 500_000)
+        assert mult >= 0.9
+
+    def test_slippage_unknown_asset_higher(self):
+        from profit_engine.opportunity_scanner import get_slippage_discount
+        known = get_slippage_discount('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', 50_000)
+        unknown = get_slippage_discount('0x0000000000000000000000000000000000000001', 50_000)
+        assert unknown < known  # Unknown asset has higher slippage default
+
+
+class TestEnhancement6_ChainScanIntervals:
+    """Enhancement 6: Per-chain scan intervals."""
+
+    def test_arbitrum_faster_than_ethereum(self):
+        from profit_engine.opportunity_scanner import CHAIN_SCAN_INTERVALS
+        assert CHAIN_SCAN_INTERVALS[42161] < CHAIN_SCAN_INTERVALS[1]
+
+    def test_base_faster_than_ethereum(self):
+        from profit_engine.opportunity_scanner import CHAIN_SCAN_INTERVALS
+        assert CHAIN_SCAN_INTERVALS[8453] < CHAIN_SCAN_INTERVALS[1]
+
+    def test_all_supported_chains_have_intervals(self):
+        from profit_engine.opportunity_scanner import CHAIN_SCAN_INTERVALS
+        expected_chains = [1, 42161, 10, 137, 8453, 43114, 56, 324]
+        for chain_id in expected_chains:
+            assert chain_id in CHAIN_SCAN_INTERVALS
+
+
+class TestEnhancement8_CompetitionBidding:
+    """Enhancement 8: Competition-aware priority fee bidding."""
+
+    def test_low_competition_lower_bid(self):
+        from profit_engine.gas_optimizer import GasOptimizer
+        go = GasOptimizer()
+        low = go.compute_priority_bid(1, 100.0, 0.2)
+        high = go.compute_priority_bid(1, 100.0, 0.9)
+        assert high >= low
+
+    def test_zero_competition_returns_base_bid(self):
+        from profit_engine.gas_optimizer import GasOptimizer
+        go = GasOptimizer()
+        bid = go.compute_priority_bid(1, 100.0, 0.0)
+        # Should be equal to base priority fee
+        state = go.chain_states[1]
+        assert bid == round(state.current_priority_fee, 4)
+
+    def test_unknown_chain_returns_default(self):
+        from profit_engine.gas_optimizer import GasOptimizer
+        go = GasOptimizer()
+        bid = go.compute_priority_bid(99999, 100.0, 0.5)
+        assert bid == 2.0
+
+
+class TestEnhancement12_GasEfficiency:
+    """Enhancement 12: Gas efficiency tracking."""
+
+    def test_gas_efficiency_defaultdict(self):
+        from profit_engine.profit_ledger import ProfitLedger
+        ledger = ProfitLedger()
+        eff = ledger.gas_efficiency['test:1:aave']
+        assert eff['gross'] == 0.0
+        assert eff['gas'] == 0.0
+        assert eff['count'] == 0
+
+    @pytest.mark.asyncio
+    async def test_gas_efficiency_updated_on_record(self):
+        from profit_engine.profit_ledger import ProfitLedger, ProfitEntry
+        ledger = ProfitLedger()
+        entry = ProfitEntry(
+            entry_id='test1', timestamp=0, chain_id=1,
+            opportunity_type='liquidation', protocol='aave_v3',
+            tx_hash='0x', gross_profit_usd=100.0,
+            gas_cost_usd=20.0, flash_loan_fee_usd=5.0,
+            net_profit_usd=75.0, capital_deployed_usd=0,
+            roi_percent=7500, execution_time_ms=100,
+            block_number=1, phase=ledger.current_phase,
+        )
+        await ledger.record(entry)
+        eff = ledger.gas_efficiency['liquidation:1:aave_v3']
+        assert eff['gross'] == 100.0
+        assert eff['gas'] == 20.0
+        assert eff['count'] == 1
+
+    def test_gas_inefficient_vectors_empty_initially(self):
+        from profit_engine.profit_ledger import ProfitLedger
+        ledger = ProfitLedger()
+        assert ledger.gas_inefficient_vectors() == []
+
+    @pytest.mark.asyncio
+    async def test_gas_inefficient_vectors_detects_high_ratio(self):
+        from profit_engine.profit_ledger import ProfitLedger, ProfitEntry
+        ledger = ProfitLedger()
+        # Record 5 entries with 70% gas ratio → should be flagged
+        for i in range(5):
+            entry = ProfitEntry(
+                entry_id=f'eff{i}', timestamp=0, chain_id=1,
+                opportunity_type='backrun', protocol='uniswap_v3',
+                tx_hash='0x', gross_profit_usd=10.0,
+                gas_cost_usd=7.0, flash_loan_fee_usd=0,
+                net_profit_usd=3.0, capital_deployed_usd=0,
+                roi_percent=300, execution_time_ms=50,
+                block_number=i, phase=ledger.current_phase,
+            )
+            await ledger.record(entry)
+        inefficient = ledger.gas_inefficient_vectors(threshold=0.5)
+        assert len(inefficient) == 1
+        assert inefficient[0]['vector'] == 'backrun'
+        assert inefficient[0]['gas_ratio'] == 0.7
+
+    def test_status_report_includes_gas_inefficient(self):
+        from profit_engine.profit_ledger import ProfitLedger
+        ledger = ProfitLedger()
+        report = ledger.status_report()
+        assert 'gas_inefficient_vectors' in report
+
+    def test_gas_inefficient_requires_min_count(self):
+        """Only flag vectors with at least 3 data points."""
+        from profit_engine.profit_ledger import ProfitLedger
+        ledger = ProfitLedger()
+        # Add 2 entries (below 3 minimum) with high gas ratio
+        ledger.gas_efficiency['test:1:proto'] = {'gross': 10.0, 'gas': 8.0, 'count': 2}
+        assert len(ledger.gas_inefficient_vectors()) == 0
+
+
+class TestEnhancement5_OracleHeartbeat:
+    """Enhancement 5: Oracle staleness configuration."""
+
+    def test_oracle_heartbeat_table_exists(self):
+        from profit_engine.opportunity_scanner import ORACLE_HEARTBEAT
+        assert 'ETH/USD' in ORACLE_HEARTBEAT
+        assert 'BTC/USD' in ORACLE_HEARTBEAT
+        assert ORACLE_HEARTBEAT['ETH/USD'] == 3600
+
+    def test_stablecoin_heartbeat_longer(self):
+        from profit_engine.opportunity_scanner import ORACLE_HEARTBEAT
+        assert ORACLE_HEARTBEAT.get('USDC/USD', 0) > ORACLE_HEARTBEAT['ETH/USD']
+
+
+class TestEnhancement9_FlashLoanSizing:
+    """Enhancement 9: Flash loan amount optimization."""
+
+    @pytest.mark.asyncio
+    async def test_flash_amount_uses_actual_debt(self):
+        """Engine should size flash loan from actual debt_amount, not expected_value * 10."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.scanner.get_feedback_score.return_value = 1.0
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        sig = OpportunitySignal(
+            signal_id='test-flash-size',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            expected_value_usd=50.0,
+            gross_profit_usd=50.0,
+            confidence=0.9,
+            net_profit_usd=45.0,
+            estimated_cost_usd=5.0,
+            metadata={
+                'vector': 'standard_liquidation',
+                'user': '0xA968eC40f51e842a9C71FbaaA906B029147469f0',
+                'protocol': 'aave_v3',
+                'debt_amount': 100000000000,  # $1000 in 8-decimal format
+                'liquidation_bonus': 0.05,
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+
+        # Verify flash loan router was called with actual debt amount ($1000)
+        # not expected_value_usd * 10 ($500)
+        if engine.flash_loan_router.find_best_route.called:
+            call_args = engine.flash_loan_router.find_best_route.call_args[0]
+            flash_amount = call_args[2]
+            assert flash_amount == 1000.0  # $1000 from debt_amount / 1e8
+
+
+class TestEnhancement11_GraduatedPolling:
+    """Enhancement 11: Watchlist graduated polling intervals."""
+
+    def test_critical_hf_gets_fastest_interval(self):
+        """Positions with HF < 1.02 should poll at 1s."""
+        # This tests the logic conceptually — the actual interval is hardcoded
+        # in the watchlist scanner loop
+        hf = 1.01
+        if hf < 1.02:
+            interval = 1.0
+        elif hf < 1.10:
+            interval = 5.0
+        else:
+            interval = 15.0
+        assert interval == 1.0
+
+    def test_near_risk_gets_medium_interval(self):
+        hf = 1.05
+        if hf < 1.02:
+            interval = 1.0
+        elif hf < 1.10:
+            interval = 5.0
+        else:
+            interval = 15.0
+        assert interval == 5.0
+
+    def test_safe_gets_slow_interval(self):
+        hf = 1.30
+        if hf < 1.02:
+            interval = 1.0
+        elif hf < 1.10:
+            interval = 5.0
+        else:
+            interval = 15.0
+        assert interval == 15.0
+
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 

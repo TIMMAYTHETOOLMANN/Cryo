@@ -206,6 +206,29 @@ MAJOR_ASSETS = STABLECOINS | {
     '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',  # WETH
 }
 
+# Enhancement 1: Per-asset Aave V3 liquidation bonuses — shared with opportunity_scanner
+# Importing from scanner to keep a single source of truth
+try:
+    from .opportunity_scanner import AAVE_V3_LIQUIDATION_BONUS
+except ImportError:
+    AAVE_V3_LIQUIDATION_BONUS = {
+        '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': 0.05,   # WETH
+        '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599': 0.07,   # WBTC
+        '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 0.045,  # USDC
+        '0xdac17f958d2ee523a2206206994597c13d831ec7': 0.045,  # USDT
+        '0x6b175474e89094c44da98b954eedeac495271d0f': 0.04,   # DAI
+        '0x514910771af9ca656af840dff83e8264ecf986ca': 0.07,   # LINK
+        '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9': 0.075,  # AAVE
+    }
+
+try:
+    from .opportunity_scanner import ORACLE_HEARTBEAT
+except ImportError:
+    ORACLE_HEARTBEAT = {
+        'ETH/USD': 3600, 'BTC/USD': 3600, 'LINK/USD': 3600,
+        'USDC/USD': 86400, 'DAI/USD': 3600, 'AAVE/USD': 3600,
+    }
+
 # Well-known DEX pool addresses monitored by MempoolSniffer for price-moving trades.
 # Covers Uniswap V2/V3 pairs and Curve pools for the collateral assets in COLLATERAL_TO_FEED.
 DEX_POOL_ADDRESSES: Dict[int, Set[str]] = {
@@ -453,6 +476,13 @@ class OracleReactor:
                             decimals = self._oracle_decimals.get(key, 8)
                             new_price = data[1] / (10 ** decimals)
 
+                            # Enhancement 5: Oracle staleness guard — per-pair heartbeat
+                            updated_at = data[3]
+                            now_ts = int(time.time())
+                            heartbeat = ORACLE_HEARTBEAT.get(pair, 3600)
+                            if new_price <= 0 or (now_ts - updated_at) > heartbeat * 1.5:
+                                continue  # Stale or zero — skip
+
                             old_price = self.index.prices.get(pair, new_price)
                             if old_price > 0 and new_price != old_price:
                                 self.index.update_price(pair, new_price)
@@ -672,16 +702,17 @@ class LiquidationExecutor:
                 abi=AAVE_POOL_ABI,
             )
 
-            # Compute debt to cover (50% for HF between 0.95 and 1.0)
-            debt_to_cover = max(int(pos.total_debt_base * 0.5), 1)
-
-            # Compute liquidation bonus
-            debt_lower = pos.debt_asset.lower()
-            if debt_lower in MAJOR_ASSETS:
-                bonus = 0.05
+            # Enhancement 3: Dynamic close factor — 100% when HF < 0.95
+            if pos.health_factor < 0.95:
+                close_factor = 1.0
             else:
-                bonus = 0.10
-            profit_est = pos.debt_usd * bonus * 0.5
+                close_factor = 0.5
+            debt_to_cover = max(int(pos.total_debt_base * close_factor), 1)
+
+            # Enhancement 1: Per-asset liquidation bonus lookup
+            collateral_lower = pos.collateral_asset.lower()
+            bonus = AAVE_V3_LIQUIDATION_BONUS.get(collateral_lower, 0.05)
+            profit_est = pos.debt_usd * bonus * close_factor
 
             nonce = w3.eth.get_transaction_count(self._account.address, 'pending')
             gas_price = w3.eth.gas_price

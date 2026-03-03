@@ -105,6 +105,13 @@ class ProfitLedger:
         self.profit_by_chain: Dict[int, float] = defaultdict(float)
         self.profit_by_protocol: Dict[str, float] = defaultdict(float)
 
+        # Enhancement 12: Gas efficiency tracking per vector:chain:protocol
+        # Tracks gross_profit and gas_cost to compute gas_ratio = gas / gross.
+        # Vectors with gas_ratio > 0.5 are flagged as gas-inefficient.
+        self.gas_efficiency: Dict[str, Dict[str, float]] = defaultdict(
+            lambda: {'gross': 0.0, 'gas': 0.0, 'count': 0}
+        )
+
         # Capital tracking
         self.capital_base_usd = 0.0  # Available capital for multiplier
         self.profit_reserve_usd = 0.0  # Locked profit (not reinvested)
@@ -153,6 +160,13 @@ class ProfitLedger:
         self.count_by_type[entry.opportunity_type] += 1
         self.profit_by_chain[entry.chain_id] += entry.net_profit_usd
         self.profit_by_protocol[entry.protocol] += entry.net_profit_usd
+
+        # Enhancement 12: Update gas efficiency tracking
+        eff_key = f"{entry.opportunity_type}:{entry.chain_id}:{entry.protocol}"
+        eff = self.gas_efficiency[eff_key]
+        eff['gross'] += entry.gross_profit_usd
+        eff['gas'] += entry.gas_cost_usd
+        eff['count'] += 1
 
         # Check phase transition
         old_phase = self.current_phase
@@ -252,6 +266,30 @@ class ProfitLedger:
         sorted_chains = sorted(self.profit_by_chain.items(), key=lambda x: x[1], reverse=True)
         return sorted_chains[:n]
 
+    def gas_inefficient_vectors(self, threshold: float = 0.5) -> List[Dict[str, Any]]:
+        """Enhancement 12: Return vectors where gas cost exceeds threshold% of gross profit.
+
+        These are vectors burning more gas than they're earning — candidates for
+        deprioritization or parameter adjustment.
+        """
+        inefficient = []
+        for key, eff in self.gas_efficiency.items():
+            if eff['gross'] > 0 and eff['count'] >= 3:
+                ratio = eff['gas'] / eff['gross']
+                if ratio > threshold:
+                    parts = key.split(':', 2)
+                    inefficient.append({
+                        'key': key,
+                        'vector': parts[0] if len(parts) > 0 else key,
+                        'chain_id': int(parts[1]) if len(parts) > 1 else 0,
+                        'protocol': parts[2] if len(parts) > 2 else '',
+                        'gas_ratio': round(ratio, 3),
+                        'total_gross': round(eff['gross'], 2),
+                        'total_gas': round(eff['gas'], 2),
+                        'count': eff['count'],
+                    })
+        return sorted(inefficient, key=lambda x: x['gas_ratio'], reverse=True)
+
     # ──────────────────────────────────────────────
     # STATUS REPORT
     # ──────────────────────────────────────────────
@@ -275,6 +313,7 @@ class ProfitLedger:
             'top_chains': self.top_chains(),
             'phase2_progress': min(100, round(self.cumulative_profit_usd / self.PHASE2_THRESHOLD * 100, 1)),
             'phase3_progress': min(100, round(self.cumulative_profit_usd / self.PHASE3_THRESHOLD * 100, 1)),
+            'gas_inefficient_vectors': self.gas_inefficient_vectors(),
         }
 
     def print_dashboard(self):
