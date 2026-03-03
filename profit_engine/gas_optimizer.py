@@ -248,19 +248,40 @@ class GasOptimizer:
         competition_level: float,   # 0-1
     ) -> float:
         """
-        Compute optimal priority fee bid based on expected profit and competition.
-        Higher competition → bid more of the profit as priority fee.
+        Enhancement 8: Compute optimal priority fee bid based on expected profit,
+        competition level, and congestion.  Higher competition → bid more of the
+        profit as priority fee to win the block inclusion race.
+
+        Strategy:
+          - Low competition (<0.3): use base priority fee — save margin
+          - Medium competition (0.3-0.7): bid up to 15% of profit
+          - High competition (>0.7): bid up to 40% of profit
+          - Extreme congestion: add congestion premium
         Returns priority fee in gwei.
         """
         state = self.chain_states.get(chain_id)
         if not state:
             return 2.0
 
-        # Base bid = current priority
+        # Base bid = current network priority
         base_bid = state.current_priority_fee
 
-        # Willingness to pay up to 30% of profit as priority fee
-        max_bid_usd = expected_profit_usd * 0.30 * competition_level
+        # Tiered willingness to pay based on competition intensity
+        if competition_level < 0.3:
+            max_pct = 0.05   # Low competition: bid max 5% of profit
+        elif competition_level < 0.7:
+            max_pct = 0.15   # Medium: up to 15%
+        else:
+            max_pct = 0.40   # High: up to 40% (aggressive for must-win scenarios)
+
+        # Congestion premium: add 20% to bid during high/extreme congestion
+        congestion_premium = 1.0
+        if state.congestion_level == 'high':
+            congestion_premium = 1.2
+        elif state.congestion_level == 'extreme':
+            congestion_premium = 1.5
+
+        max_bid_usd = expected_profit_usd * max_pct * competition_level * congestion_premium
         gas_units = 350_000  # Average
         if state.eth_price_usd > 0 and gas_units > 0:
             max_bid_gwei = (max_bid_usd * 1e9) / (gas_units * state.eth_price_usd)

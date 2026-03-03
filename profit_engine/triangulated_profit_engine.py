@@ -230,16 +230,35 @@ class TriangulatedProfitEngine:
                 self.opportunities_skipped += 1
                 return
 
+            # ── Step 1c: Gas efficiency gate (Enhancement 12) ──
+            # If this vector:chain:protocol historically burns >60% of gross as gas,
+            # require higher confidence to proceed.
+            eff_key = f"{opp_type}:{signal.chain_id}:{protocol}"
+            gas_eff_data = getattr(self.ledger, 'gas_efficiency', None)
+            if isinstance(gas_eff_data, dict):
+                eff = gas_eff_data.get(eff_key)
+                if eff and isinstance(eff, dict) and eff.get('gross', 0) > 0 and eff.get('count', 0) >= 5:
+                    gas_ratio = eff['gas'] / eff['gross']
+                    if gas_ratio > 0.6 and signal.confidence < 0.7:
+                        self.opportunities_skipped += 1
+                        return
+
             # ── Step 2: Capital Multiplier position sizing ──
             position_size = self.capital_multiplier.get_position_size(
                 opp_type, signal.chain_id, protocol, signal.net_profit_usd
             )
 
             # ── Step 3: Flash loan routing (if no own capital or supplementing) ──
+            # Enhancement 9: Compute exact flash loan amount from actual debt data.
+            # debt_amount is stored in base currency units (8 decimals for Aave V3 USD).
             flash_route = None
-            total_capital_needed = signal.metadata.get('debt_amount', 0) / 1e8  # Approx USD
+            raw_debt = signal.metadata.get('debt_amount', 0)
+            # Aave V3 stores in 8-decimal USD base currency
+            total_capital_needed = raw_debt / 1e8 if raw_debt > 0 else 0
             if total_capital_needed <= 0:
-                total_capital_needed = signal.expected_value_usd * 10  # Estimate
+                # Fallback: estimate from bonus — debt ≈ gross_profit / bonus
+                bonus = signal.metadata.get('liquidation_bonus', 0.05)
+                total_capital_needed = signal.gross_profit_usd / max(bonus, 0.01)
 
             if position_size < total_capital_needed:
                 # Need flash loan for the difference (or all of it in Phase 1)
