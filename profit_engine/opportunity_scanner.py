@@ -301,6 +301,11 @@ class OpportunityScanner:
                 await self._flush_recon_queue()
                 self._recon_phase_active = False
 
+    @staticmethod
+    def _signal_profit(signal: OpportunitySignal) -> float:
+        """Extract the best available profit estimate from a signal."""
+        return signal.net_profit_usd or signal.expected_value_usd or 0.0
+
     async def _flush_recon_queue(self):
         """Sort accumulated reconnaissance targets by profit priority and emit in order."""
         if not self._recon_queue:
@@ -308,10 +313,10 @@ class OpportunityScanner:
             return
 
         # Sort by expected profit descending (highest profit first)
-        self._recon_queue.sort(key=lambda s: s.net_profit_usd or s.expected_value_usd or 0, reverse=True)
+        self._recon_queue.sort(key=self._signal_profit, reverse=True)
 
         count = len(self._recon_queue)
-        total_profit = sum(s.net_profit_usd or s.expected_value_usd or 0 for s in self._recon_queue)
+        total_profit = sum(self._signal_profit(s) for s in self._recon_queue)
         print(f"\n   🎯 RECON SWEEP COMPLETE — {count} targets identified, ${total_profit:,.2f} total potential")
         print(f"   🚀 Executing in profit-priority order (highest first)...")
 
@@ -327,10 +332,15 @@ class OpportunityScanner:
     # ──────────────────────────────────────────────
 
     def queue_gas_retry(self, signal: OpportunitySignal):
-        """Add opportunity to gas retry queue when gas gate blocks it."""
+        """Add opportunity to gas retry queue when gas gate blocks it.
+        When queue is full, only add if new signal is more profitable than the worst entry."""
+        new_profit = signal.net_profit_usd or 0.0
         if len(self._gas_retry_queue) >= self._max_retry_queue_size:
-            # Evict lowest-profit entry
+            # Sort descending so worst entry is last
             self._gas_retry_queue.sort(key=lambda s: s.net_profit_usd or 0, reverse=True)
+            worst_profit = self._gas_retry_queue[-1].net_profit_usd or 0.0
+            if new_profit <= worst_profit:
+                return  # New signal isn't better than worst queued entry
             self._gas_retry_queue.pop()
         self._gas_retry_queue.append(signal)
 

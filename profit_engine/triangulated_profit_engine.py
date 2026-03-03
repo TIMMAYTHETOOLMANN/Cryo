@@ -223,6 +223,8 @@ class TriangulatedProfitEngine:
             opp_type = signal.metadata.get('vector', signal.signal_type.value)
             protocol = signal.metadata.get('protocol', 'unknown')
             feedback_score = self.scanner.get_feedback_score(opp_type, signal.chain_id, protocol)
+            # Skip if this combo fails >70% of the time AND signal confidence is below 50%:
+            # wasting gas on low-confidence signals from historically failing combos is unprofitable.
             if feedback_score < 0.3 and signal.confidence < 0.5:
                 # High failure rate AND low confidence → skip
                 self.opportunities_skipped += 1
@@ -260,7 +262,8 @@ class TriangulatedProfitEngine:
 
             final_profit = signal.gross_profit_usd - total_cost
             if final_profit < 0.01:  # Accept anything net-positive
-                # Queue for gas retry in case gas drops later
+                # Queue for gas retry if net loss is small (<$5) and there's real gross profit (>$1);
+                # this captures opportunities that are only temporarily unprofitable due to gas spikes.
                 if final_profit > -5.0 and signal.gross_profit_usd > 1.0:
                     self.scanner.queue_gas_retry(signal)
                 self.opportunities_skipped += 1
