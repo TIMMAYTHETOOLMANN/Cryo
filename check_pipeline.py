@@ -2,7 +2,9 @@
 """Quick status check for the running pipeline."""
 import sys, os
 
-log_file = os.path.join(os.path.dirname(__file__), "cryo1_live.log")
+log_file = os.path.join(os.path.dirname(__file__), "cryo.log")
+if not os.path.exists(log_file):
+    log_file = os.path.join(os.path.dirname(__file__), "cryo1_live.log")
 if not os.path.exists(log_file):
     log_file = os.path.join(os.path.dirname(__file__), "module1_liquidation_engine.log")
 
@@ -49,6 +51,14 @@ for label, evts in events.items():
 
 # Check if process is running
 import subprocess
-result = subprocess.run(["tasklist"], capture_output=True, text=True)
-py_procs = [l for l in result.stdout.split("\n") if "python" in l.lower()]
-print(f"Python processes running: {len(py_procs)}")
+import platform
+try:
+    if platform.system() == "Windows":
+        result = subprocess.run(["tasklist"], capture_output=True, text=True)
+        py_procs = [l for l in result.stdout.split("\n") if "python" in l.lower()]
+    else:
+        result = subprocess.run(["pgrep", "-a", "python"], capture_output=True, text=True)
+        py_procs = [l for l in result.stdout.strip().split("\n") if l]
+    print(f"Python processes running: {len(py_procs)}")
+except (FileNotFoundError, subprocess.SubprocessError, OSError) as e:
+    print(f"Python processes running: unknown ({e})")
