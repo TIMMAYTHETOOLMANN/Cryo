@@ -363,7 +363,9 @@ class OpportunityScanner:
 
             retryable = []
             for signal in self._gas_retry_queue:
-                # Re-check if gas is now affordable
+                # Re-check if gas is now affordable.
+                # GasOptimizer.estimate() expects gross profit (before gas deduction);
+                # net_profit_usd already has gas subtracted, so using it would double-count.
                 gross_profit_usd = signal.gross_profit_usd
                 if gross_profit_usd is None:
                     # Fall back to expected value if gross profit is unavailable
