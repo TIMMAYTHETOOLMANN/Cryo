@@ -53,6 +53,15 @@ class GasOptimizer:
     Dynamic gas management across all supported chains.
     """
 
+    # Competition-aware bidding thresholds (Enhancement 8)
+    COMPETITION_LOW_THRESHOLD = 0.3      # Below this: low competition
+    COMPETITION_HIGH_THRESHOLD = 0.7     # Above this: high competition
+    BID_PCT_LOW_COMPETITION = 0.05       # Max 5% of profit as priority fee
+    BID_PCT_MED_COMPETITION = 0.15       # Max 15%
+    BID_PCT_HIGH_COMPETITION = 0.40      # Max 40% (must-win)
+    CONGESTION_PREMIUM_HIGH = 1.2        # 20% premium during high congestion
+    CONGESTION_PREMIUM_EXTREME = 1.5     # 50% premium during extreme congestion
+
     # Gas unit estimates per operation type
     GAS_UNITS = {
         'liquidation': 350_000,
@@ -267,19 +276,19 @@ class GasOptimizer:
         base_bid = state.current_priority_fee
 
         # Tiered willingness to pay based on competition intensity
-        if competition_level < 0.3:
-            max_pct = 0.05   # Low competition: bid max 5% of profit
-        elif competition_level < 0.7:
-            max_pct = 0.15   # Medium: up to 15%
+        if competition_level < self.COMPETITION_LOW_THRESHOLD:
+            max_pct = self.BID_PCT_LOW_COMPETITION
+        elif competition_level < self.COMPETITION_HIGH_THRESHOLD:
+            max_pct = self.BID_PCT_MED_COMPETITION
         else:
-            max_pct = 0.40   # High: up to 40% (aggressive for must-win scenarios)
+            max_pct = self.BID_PCT_HIGH_COMPETITION
 
-        # Congestion premium: add 20% to bid during high/extreme congestion
+        # Congestion premium: boost bid during high/extreme congestion
         congestion_premium = 1.0
         if state.congestion_level == 'high':
-            congestion_premium = 1.2
+            congestion_premium = self.CONGESTION_PREMIUM_HIGH
         elif state.congestion_level == 'extreme':
-            congestion_premium = 1.5
+            congestion_premium = self.CONGESTION_PREMIUM_EXTREME
 
         max_bid_usd = expected_profit_usd * max_pct * competition_level * congestion_premium
         gas_units = 350_000  # Average

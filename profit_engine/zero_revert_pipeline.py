@@ -221,6 +221,14 @@ except ImportError:
         '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9': 0.075,  # AAVE
     }
 
+try:
+    from .opportunity_scanner import ORACLE_HEARTBEAT
+except ImportError:
+    ORACLE_HEARTBEAT = {
+        'ETH/USD': 3600, 'BTC/USD': 3600, 'LINK/USD': 3600,
+        'USDC/USD': 86400, 'DAI/USD': 3600, 'AAVE/USD': 3600,
+    }
+
 # Well-known DEX pool addresses monitored by MempoolSniffer for price-moving trades.
 # Covers Uniswap V2/V3 pairs and Curve pools for the collateral assets in COLLATERAL_TO_FEED.
 DEX_POOL_ADDRESSES: Dict[int, Set[str]] = {
@@ -468,10 +476,11 @@ class OracleReactor:
                             decimals = self._oracle_decimals.get(key, 8)
                             new_price = data[1] / (10 ** decimals)
 
-                            # Enhancement 5: Oracle staleness guard
+                            # Enhancement 5: Oracle staleness guard — per-pair heartbeat
                             updated_at = data[3]
                             now_ts = int(time.time())
-                            if new_price <= 0 or (now_ts - updated_at) > 5400:
+                            heartbeat = ORACLE_HEARTBEAT.get(pair, 3600)
+                            if new_price <= 0 or (now_ts - updated_at) > heartbeat * 1.5:
                                 continue  # Stale or zero — skip
 
                             old_price = self.index.prices.get(pair, new_price)

@@ -601,7 +601,7 @@ class OpportunityScanner:
 
                         route = self.flash_loan_router.find_best_route(
                             chain_id, 'USDC',
-                            sig.expected_value_usd / max(liquidation_bonus, 0.01),
+                            sig.expected_value_usd / max(sig.metadata.get('liquidation_bonus', 0.05), 0.01),
                             sig.expected_value_usd
                         )
                         if route:
@@ -620,8 +620,8 @@ class OpportunityScanner:
 
                 chunk_offset += chunk_size
                 # Enhancement 6: Use per-chain scan interval — L2s scan faster
-                chain_interval = min(CHAIN_SCAN_INTERVALS.get(chain_id, 5.0)
-                                     for chain_id in self._w3.keys()) if self._w3 else 5.0
+                chain_interval = min(CHAIN_SCAN_INTERVALS.get(cid, 5.0)
+                                     for cid in self._w3.keys()) if self._w3 else 5.0
                 backoff = max(chain_interval, 1.0)
                 await asyncio.sleep(backoff)
 
@@ -672,7 +672,11 @@ class OpportunityScanner:
                         fn_name='getUserAccountData',
                         args=[Web3.to_checksum_address(user_addr)],
                     )
-                    calls.append((Web3.to_checksum_address(pool_addr), True, bytes.fromhex(calldata[2:])))
+                    # encodeABI returns hex string '0x...' — convert to bytes
+                    calldata_hex = calldata if isinstance(calldata, str) else calldata.hex()
+                    if calldata_hex.startswith('0x'):
+                        calldata_hex = calldata_hex[2:]
+                    calls.append((Web3.to_checksum_address(pool_addr), True, bytes.fromhex(calldata_hex)))
 
                 # Multicall3 aggregate3 ABI
                 multicall_abi = json.loads('''[{
@@ -694,8 +698,8 @@ class OpportunityScanner:
                     abi=multicall_abi,
                 )
 
-                # Execute batch (up to 50 per multicall)
-                batch_size = 50
+                # Execute batch — L1 uses smaller batches, L2s can handle more
+                batch_size = 200 if chain_id in (42161, 10, 8453, 137, 324) else 50
                 for batch_start in range(0, len(calls), batch_size):
                     batch = calls[batch_start:batch_start + batch_size]
                     batch_addrs = addr_list[batch_start:batch_start + batch_size]
@@ -1062,8 +1066,9 @@ class OpportunityScanner:
                         round_data = oracle.functions.latestRoundData().call()
                         price = round_data[1] / 1e8
                         updated_at = round_data[3]
-                        # Staleness guard
-                        if price > 0 and (int(time.time()) - updated_at) < 5400:
+                        # Staleness guard — use ETH/USD heartbeat (3600s) × 1.5
+                        heartbeat = ORACLE_HEARTBEAT.get('ETH/USD', 3600)
+                        if price > 0 and (int(time.time()) - updated_at) < heartbeat * 1.5:
                             prices[chain_id] = price
                     except Exception:
                         # Fallback to cached oracle price
@@ -1178,7 +1183,12 @@ class OpportunityScanner:
                                     compound_borrowers[market_key] = set()
                                     try:
                                         current_block = w3.eth.block_number
-                                        from_block = max(0, current_block - 5000)
+                                        # Chain-specific lookback: ~6h worth of blocks
+                                        # L2s: ~0.25-2s blocks ≈ 10000-80000 blocks/6h
+                                        # L1: ~12s blocks ≈ 1800 blocks/6h
+                                        blocks_per_6h = {1: 1800, 42161: 80000, 10: 10800, 137: 10800, 8453: 10800}
+                                        lookback = blocks_per_6h.get(chain_id, 5000)
+                                        from_block = max(0, current_block - lookback)
                                         logs = w3.eth.get_logs({
                                             'address': Web3.to_checksum_address(market_addr),
                                             'topics': [withdraw_topic],

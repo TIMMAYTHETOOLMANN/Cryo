@@ -256,7 +256,9 @@ class TriangulatedProfitEngine:
             # Aave V3 stores in 8-decimal USD base currency
             total_capital_needed = raw_debt / 1e8 if raw_debt > 0 else 0
             if total_capital_needed <= 0:
-                # Fallback: estimate from bonus — debt ≈ gross_profit / bonus
+                # Fallback: estimate from bonus — debt ≈ gross_profit / bonus.
+                # This is approximate: gross_profit may include slippage discounts,
+                # so the estimate is conservative (over-requests slightly).
                 bonus = signal.metadata.get('liquidation_bonus', 0.05)
                 total_capital_needed = signal.gross_profit_usd / max(bonus, 0.01)
 
