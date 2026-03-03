@@ -163,13 +163,33 @@ class OpportunityScanner:
         self.total_opportunities_found = 0
 
         # Stats per vector
-        self.vector_stats: Dict[str, Dict] = {v.value: {'found': 0, 'executed': 0, 'profit': 0.0}
+        self.vector_stats: Dict[str, Dict] = {v.value: {'found': 0, 'executed': 0, 'profit': 0.0,
+                                                          'failures': 0, 'success_rate': 1.0}
                                                 for v in OpportunityVector}
+
+        # ── Execution Feedback ──
+        # Track success/failure per vector+chain+protocol to deprioritize failing combos
+        self._execution_feedback: Dict[str, Dict] = {}  # "vector:chain:protocol" → {successes, failures, rate}
+
+        # ── Batch Accumulation Queue ──
+        # During initial reconnaissance, accumulate opportunities instead of emitting one-by-one.
+        # Once recon sweep completes, flush all queued opportunities sorted by profit (highest first).
+        self._recon_queue: List[OpportunitySignal] = []
+        self._recon_phase_active = True  # True during initial scan sweep
+        self._recon_started_at: Optional[float] = None
+        self._recon_sweep_duration = float(self.config.get('recon_sweep_seconds', 120))  # 2min default
+
+        # ── Gas Retry Queue ──
+        # Opportunities rejected by gas gate held for retry when gas drops
+        self._gas_retry_queue: List[OpportunitySignal] = []
+        self._max_retry_queue_size = 50
+        self._gas_retry_interval = 30  # seconds between retry sweeps
 
         print("🔍 Opportunity Scanner initialized")
         print(f"   Scan interval: {self.scan_interval}s")
         print(f"   Min profit: ${self.min_profit_usd}")
         print(f"   Vectors: {len(OpportunityVector)}")
+        print(f"   Recon sweep: {self._recon_sweep_duration}s")
 
     # ──────────────────────────────────────────────
     # LIFECYCLE
@@ -213,7 +233,10 @@ class OpportunityScanner:
     async def start(self):
         """Start scanning loop."""
         self.is_running = True
+        self._recon_started_at = time.time()
+        self._recon_phase_active = True
         print("\n🔍 Opportunity Scanner ACTIVE")
+        print(f"   📡 Recon phase: accumulating targets for {self._recon_sweep_duration}s before batch execution")
 
         # Launch concurrent vector scanners
         tasks = [
@@ -227,6 +250,8 @@ class OpportunityScanner:
             asyncio.create_task(self._scan_loop_watchlist()),
             asyncio.create_task(self._gas_update_loop()),
             asyncio.create_task(self._heartbeat_loop()),
+            asyncio.create_task(self._recon_flush_loop()),
+            asyncio.create_task(self._gas_retry_loop()),
         ]
 
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -240,13 +265,155 @@ class OpportunityScanner:
         self._callbacks.append(callback)
 
     async def _emit(self, signal: OpportunitySignal):
-        """Emit opportunity to all registered callbacks."""
+        """Emit opportunity — during recon phase, queue; after recon, emit directly."""
         self.total_opportunities_found += 1
+
+        if self._recon_phase_active:
+            # Accumulate during recon sweep instead of immediate emission
+            self._recon_queue.append(signal)
+            return
+
+        # After recon phase: emit directly to execution pipeline
+        await self._emit_direct(signal)
+
+    async def _emit_direct(self, signal: OpportunitySignal):
+        """Emit opportunity directly to all registered callbacks."""
         for cb in self._callbacks:
             try:
                 await cb(signal)
             except Exception as e:
                 print(f"   ⚠️ Callback error: {e}")
+
+    # ──────────────────────────────────────────────
+    # RECON PHASE COORDINATION
+    # ──────────────────────────────────────────────
+
+    async def _recon_flush_loop(self):
+        """Monitor recon phase. Once sweep duration expires, sort and flush all queued targets."""
+        while self.is_running:
+            await asyncio.sleep(5)
+
+            if not self._recon_phase_active:
+                continue
+
+            elapsed = time.time() - (self._recon_started_at or time.time())
+            if elapsed >= self._recon_sweep_duration:
+                await self._flush_recon_queue()
+                self._recon_phase_active = False
+
+    @staticmethod
+    def _signal_profit(signal: OpportunitySignal) -> float:
+        """Extract the best available profit estimate from a signal."""
+        return signal.net_profit_usd or signal.expected_value_usd or 0.0
+
+    async def _flush_recon_queue(self):
+        """Sort accumulated reconnaissance targets by profit priority and emit in order."""
+        if not self._recon_queue:
+            print("   📡 Recon sweep complete — no targets accumulated")
+            return
+
+        # Sort by expected profit descending (highest profit first)
+        self._recon_queue.sort(key=self._signal_profit, reverse=True)
+
+        count = len(self._recon_queue)
+        total_profit = sum(self._signal_profit(s) for s in self._recon_queue)
+        print(f"\n   🎯 RECON SWEEP COMPLETE — {count} targets identified, ${total_profit:,.2f} total potential")
+        print(f"   🚀 Executing in profit-priority order (highest first)...")
+
+        # Emit all in profit-priority order
+        for signal in self._recon_queue:
+            await self._emit_direct(signal)
+
+        self._recon_queue.clear()
+        print(f"   ✅ All {count} targets dispatched to execution pipeline")
+
+    # ──────────────────────────────────────────────
+    # GAS RETRY QUEUE
+    # ──────────────────────────────────────────────
+
+    def queue_gas_retry(self, signal: OpportunitySignal):
+        """Add opportunity to gas retry queue when gas gate blocks it.
+        When queue is full, only add if new signal is more profitable than the worst entry."""
+        new_profit = signal.net_profit_usd or 0.0
+        if len(self._gas_retry_queue) >= self._max_retry_queue_size:
+            # Sort descending so worst entry is last
+            self._gas_retry_queue.sort(key=lambda s: s.net_profit_usd or 0, reverse=True)
+            worst_profit = self._gas_retry_queue[-1].net_profit_usd or 0.0
+            if new_profit <= worst_profit:
+                return  # New signal isn't better than worst queued entry
+            self._gas_retry_queue.pop()
+        self._gas_retry_queue.append(signal)
+
+    async def _gas_retry_loop(self):
+        """Periodically re-check gas-deferred opportunities."""
+        while self.is_running:
+            await asyncio.sleep(self._gas_retry_interval)
+
+            if not self._gas_retry_queue:
+                continue
+
+            retryable = []
+            for signal in self._gas_retry_queue:
+                # Re-check if gas is now affordable
+                gas_est = self.gas_optimizer.estimate(
+                    signal.chain_id,
+                    signal.metadata.get('vector', 'liquidation'),
+                    signal.net_profit_usd or signal.expected_value_usd or 0,
+                )
+                if gas_est.is_profitable_at_current:
+                    signal.estimated_cost_usd = gas_est.gas_cost_usd
+                    signal.net_profit_usd = gas_est.margin_remaining_usd
+                    await self._emit_direct(signal)
+                else:
+                    retryable.append(signal)
+
+            retried = len(self._gas_retry_queue) - len(retryable)
+            if retried > 0:
+                print(f"   ⛽ Gas retry: {retried} opportunities re-dispatched")
+            self._gas_retry_queue = retryable
+
+    # ──────────────────────────────────────────────
+    # EXECUTION FEEDBACK (closed-loop learning)
+    # ──────────────────────────────────────────────
+
+    def record_execution_outcome(self, vector: str, chain_id: int, protocol: str,
+                                  success: bool, profit_usd: float = 0.0):
+        """Record execution outcome to adjust scanner priorities.
+        Called by the engine after each execution completes."""
+        key = f"{vector}:{chain_id}:{protocol}"
+        if key not in self._execution_feedback:
+            self._execution_feedback[key] = {'successes': 0, 'failures': 0, 'total_profit': 0.0}
+
+        fb = self._execution_feedback[key]
+        if success:
+            fb['successes'] += 1
+            fb['total_profit'] += profit_usd
+        else:
+            fb['failures'] += 1
+
+        total = fb['successes'] + fb['failures']
+        fb['rate'] = fb['successes'] / total if total > 0 else 1.0
+
+        # Update vector_stats
+        if vector in self.vector_stats:
+            if success:
+                self.vector_stats[vector]['executed'] += 1
+                self.vector_stats[vector]['profit'] += profit_usd
+            else:
+                self.vector_stats[vector]['failures'] = self.vector_stats[vector].get('failures', 0) + 1
+            total_v = self.vector_stats[vector]['executed'] + self.vector_stats[vector].get('failures', 0)
+            self.vector_stats[vector]['success_rate'] = (
+                self.vector_stats[vector]['executed'] / total_v if total_v > 0 else 1.0
+            )
+
+    def get_feedback_score(self, vector: str, chain_id: int, protocol: str) -> float:
+        """Get the success rate for a vector+chain+protocol combo (0.0 to 1.0).
+        Returns 1.0 for unknown combos (no penalty for untested)."""
+        key = f"{vector}:{chain_id}:{protocol}"
+        fb = self._execution_feedback.get(key)
+        if not fb:
+            return 1.0
+        return fb.get('rate', 1.0)
 
     # ──────────────────────────────────────────────
     # VECTOR 1: STANDARD LIQUIDATIONS
@@ -802,6 +969,7 @@ class OpportunityScanner:
                             continue
 
                         # Record observation for heat map even if we can't execute yet
+                        self.vector_stats['nft_backed_loan']['found'] += 1
                         self.heat_map.record_observation(
                             'nft_backed_loan', 1, protocol_name.lower(),
                             competition=0.1,  # Extremely low competition
@@ -1057,12 +1225,20 @@ class OpportunityScanner:
             self.total_scans += 1
             gas_1 = self.gas_optimizer.chain_states.get(1)
             gas_str = f"{gas_1.current_base_fee:.4f} gwei" if gas_1 else "N/A"
+            recon_str = ""
+            if self._recon_phase_active:
+                queued = len(self._recon_queue)
+                elapsed = time.time() - (self._recon_started_at or time.time())
+                remaining = max(0, self._recon_sweep_duration - elapsed)
+                recon_str = f" | 📡 RECON: {queued} queued, {remaining:.0f}s left"
+            retry_str = f" | ⛽ retry_q: {len(self._gas_retry_queue)}" if self._gas_retry_queue else ""
             print(f"   ⏱️  Scan #{scan_count} | "
                   f"Positions: {len(self._tracked_positions)} | "
                   f"Watchlist: {len(self._watchlist)} | "
                   f"Opps found: {self.total_opportunities_found} | "
                   f"ETH gas: {gas_str} | "
-                  f"Vectors: {sum(1 for v in self.vector_stats.values() if v['found'] > 0)}/6 active")
+                  f"Vectors: {sum(1 for v in self.vector_stats.values() if v['found'] > 0)}/6 active"
+                  f"{recon_str}{retry_str}")
 
     # ──────────────────────────────────────────────
     # POSITION MANAGEMENT
@@ -1091,4 +1267,8 @@ class OpportunityScanner:
             'vector_stats': self.vector_stats,
             'oracle_prices': dict(self._oracle_prices),
             'gas_status': self.gas_optimizer.chain_status(),
+            'recon_phase_active': self._recon_phase_active,
+            'recon_queue_size': len(self._recon_queue),
+            'gas_retry_queue_size': len(self._gas_retry_queue),
+            'execution_feedback_keys': len(self._execution_feedback),
         }

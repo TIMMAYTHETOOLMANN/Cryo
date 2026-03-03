@@ -626,6 +626,8 @@ class Pipeline:
                         liquidation_bonus=sig.liquidation_bonus if sig.liquidation_bonus else 0.05,
                         estimated_profit_usd=sig.estimated_profit_usd,
                         max_gas_price=int(self.config.execution.gas_price_cap_gwei * 1e9),
+                        # Preserve Omni-Scope ML confidence for downstream prioritization
+                        liquidation_probability=getattr(sig, 'confidence', 0.0),
                     ))
                     omni_converted += 1
 

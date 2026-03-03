@@ -354,6 +354,20 @@ class LiquidationExecutor(ExecutionInterface):
 
         print(f"   📋 Registered {len(self._protocols)} liquidation protocols")
 
+    @staticmethod
+    def _is_valid_address(addr: Any) -> bool:
+        """Check if addr is a non-empty string that Web3 can parse as an address.
+        The quick length pre-check avoids calling into Web3 for obviously bad inputs
+        (None, empty string, bare '0x'); Web3.to_checksum_address handles full
+        format/length validation."""
+        if not isinstance(addr, str) or len(addr) < 3:
+            return False
+        try:
+            Web3.to_checksum_address(addr)
+            return True
+        except (ValueError, TypeError):
+            return False
+
     async def validate_request(self, request: ExecutionRequest) -> bool:
         """Validate liquidation request"""
         if request.execution_type != ExecutionType.LIQUIDATION:
@@ -361,6 +375,15 @@ class LiquidationExecutor(ExecutionInterface):
 
         # Check chain is supported
         if request.chain_id not in self._w3_providers:
+            return False
+
+        # Validate that target_contract is a real address
+        if not self._is_valid_address(request.target_contract):
+            return False
+
+        # Validate required metadata fields for liquidation
+        user = request.metadata.get('user', '')
+        if not self._is_valid_address(user):
             return False
 
         # Check minimum profit against protocol threshold
@@ -506,14 +529,21 @@ class LiquidationExecutor(ExecutionInterface):
         }]''')
 
         pool_addr = request.target_contract  # This IS the Aave pool address
+        if not self._is_valid_address(pool_addr):
+            raise ValueError(f"Invalid pool address: {pool_addr!r}")
+
+        collateral_asset = request.metadata.get('collateral_asset', '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')
+        debt_asset = request.metadata.get('debt_asset', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48')
+        user = request.metadata.get('user', '')
+
+        for label, addr in [('collateral_asset', collateral_asset), ('debt_asset', debt_asset), ('user', user)]:
+            if not self._is_valid_address(addr):
+                raise ValueError(f"Invalid {label} address: {addr!r}")
+
         pool = w3.eth.contract(
             address=Web3.to_checksum_address(pool_addr),
             abi=pool_abi,
         )
-
-        collateral_asset = request.metadata.get('collateral_asset', '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')
-        debt_asset = request.metadata.get('debt_asset', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48')
-        user = request.metadata['user']
         # Cover 50% of debt (Aave max close factor for HF < 0.95 is 100%, for HF < 1.0 is 50%)
         debt_to_cover = request.metadata.get('debt_amount', 0)
         if debt_to_cover == 0:

@@ -1425,6 +1425,669 @@ class TestMainnetDeploymentCalibration:
         assert executor.txs_fired == 0  # blocked by gas cap
 
 
+class TestLiquidationExecutorValidation:
+    """Validates address and metadata validation in LiquidationExecutor."""
+
+    def _make_executor(self):
+        """Create a LiquidationExecutor with a mock W3 provider."""
+        from unittest.mock import MagicMock
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        mock_w3 = MagicMock()
+        mock_w3.eth.chain_id = 1
+        executor = LiquidationExecutor({'PRIVATE_KEY': '0x' + 'aa' * 32})
+        executor._w3_providers[1] = mock_w3
+        return executor
+
+    def test_is_valid_address_accepts_valid(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert LiquidationExecutor._is_valid_address('0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2')
+
+    def test_is_valid_address_rejects_empty_string(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert not LiquidationExecutor._is_valid_address('')
+
+    def test_is_valid_address_rejects_none(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert not LiquidationExecutor._is_valid_address(None)
+
+    def test_is_valid_address_rejects_short_hex(self):
+        from omni_channel.execution_router.liquidation_executor import LiquidationExecutor
+        assert not LiquidationExecutor._is_valid_address('0x')
+
+    @pytest.mark.asyncio
+    async def test_validate_rejects_empty_target_contract(self):
+        """Validation rejects requests with empty target_contract."""
+        from omni_channel.execution_router.execution_interface import ExecutionRequest, ExecutionType
+        executor = self._make_executor()
+        request = ExecutionRequest(
+            request_id='test-1',
+            execution_type=ExecutionType.LIQUIDATION,
+            chain_id=1,
+            opportunity_data={},
+            target_contract='',
+            calldata='0x',
+            metadata={'user': '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'},
+        )
+        assert await executor.validate_request(request) is False
+
+    @pytest.mark.asyncio
+    async def test_validate_rejects_missing_user(self):
+        """Validation rejects requests without a user address in metadata."""
+        from omni_channel.execution_router.execution_interface import ExecutionRequest, ExecutionType
+        executor = self._make_executor()
+        request = ExecutionRequest(
+            request_id='test-2',
+            execution_type=ExecutionType.LIQUIDATION,
+            chain_id=1,
+            opportunity_data={},
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            calldata='0x',
+            metadata={},
+        )
+        assert await executor.validate_request(request) is False
+
+    @pytest.mark.asyncio
+    async def test_validate_accepts_valid_liquidation_request(self):
+        """Validation accepts a well-formed liquidation request."""
+        from omni_channel.execution_router.execution_interface import ExecutionRequest, ExecutionType
+        executor = self._make_executor()
+        request = ExecutionRequest(
+            request_id='test-3',
+            execution_type=ExecutionType.LIQUIDATION,
+            chain_id=1,
+            opportunity_data={},
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            calldata='0x',
+            metadata={
+                'user': '0xA968eC40f51e842a9C71FbaaA906B029147469f0',
+                'expected_profit_usd': 100,
+            },
+        )
+        assert await executor.validate_request(request) is True
+
+
+class TestOpportunitySkipIncompleteSignals:
+    """Validates that signals without required fields are skipped."""
+
+    @pytest.mark.asyncio
+    async def test_handle_opportunity_skips_liquidation_without_target(self):
+        """Signals routed as LIQUIDATION but missing target_contract are skipped."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        # Patch heavy initialization
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.scanner.get_feedback_score.return_value = 1.0
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        # Preemptive liquidation signal — has no target_contract and no user
+        sig = OpportunitySignal(
+            signal_id='test-preemptive',
+            signal_type=SignalType.ORACLE_UPDATE,
+            source_module=SignalSource.MEMPOOL_RADAR,
+            chain_id=1,
+            expected_value_usd=100.0,
+            gross_profit_usd=100.0,
+            confidence=0.5,
+            net_profit_usd=50.0,
+            estimated_cost_usd=5.0,
+            metadata={
+                'vector': 'preemptive_liquidation',
+                'oracle': '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419',
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+
+        # Should have been skipped — no target_contract
+        assert engine.opportunities_skipped == 1
+        assert engine.opportunities_executed == 0
+        engine.execution_manager.submit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_opportunity_skips_liquidation_without_user(self):
+        """Signals routed as LIQUIDATION but missing user are skipped."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.scanner.get_feedback_score.return_value = 1.0
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        # Has target_contract but no user in metadata
+        sig = OpportunitySignal(
+            signal_id='test-no-user',
+            signal_type=SignalType.VULNERABILITY,
+            source_module=SignalSource.STATIC_ANALYZER,
+            chain_id=1,
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            expected_value_usd=200.0,
+            gross_profit_usd=200.0,
+            confidence=0.65,
+            net_profit_usd=100.0,
+            estimated_cost_usd=10.0,
+            metadata={
+                'vector': 'undercollateralized_pool',
+                'protocol': 'compound_v3',
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+
+        assert engine.opportunities_skipped == 1
+        assert engine.opportunities_executed == 0
+        engine.execution_manager.submit.assert_not_called()
+
+
+class TestNFTVectorCountsOpportunities:
+    """Validates that NFT-backed loan vector increments its found counter."""
+
+    def test_nft_vector_key_exists(self):
+        """OpportunityScanner vector_stats has nft_backed_loan key."""
+        from unittest.mock import MagicMock
+        from profit_engine.opportunity_scanner import OpportunityScanner
+        gas_opt = MagicMock()
+        gas_opt.chain_states = {}
+        flash_router = MagicMock()
+        flash_router.providers = []
+        heat_map = MagicMock()
+        scanner = OpportunityScanner(gas_opt, flash_router, heat_map, {})
+        assert 'nft_backed_loan' in scanner.vector_stats
+        assert scanner.vector_stats['nft_backed_loan']['found'] == 0
+
+
+class TestUnifiedReconToExecution:
+    """Validates the unified reconnaissance-to-execution coordination system."""
+
+    def _make_scanner(self, config=None):
+        from unittest.mock import MagicMock
+        from profit_engine.opportunity_scanner import OpportunityScanner
+        gas_opt = MagicMock()
+        gas_opt.chain_states = {}
+        flash_router = MagicMock()
+        flash_router.providers = []
+        heat_map = MagicMock()
+        return OpportunityScanner(gas_opt, flash_router, heat_map, config or {})
+
+    # ── Execution Feedback Tests ──
+
+    def test_execution_feedback_records_success(self):
+        """record_execution_outcome tracks successful executions."""
+        scanner = self._make_scanner()
+        scanner.record_execution_outcome('standard_liquidation', 1, 'aave_v3', True, 100.0)
+        fb = scanner._execution_feedback['standard_liquidation:1:aave_v3']
+        assert fb['successes'] == 1
+        assert fb['failures'] == 0
+        assert fb['total_profit'] == 100.0
+        assert fb['rate'] == 1.0
+
+    def test_execution_feedback_records_failure(self):
+        """record_execution_outcome tracks failed executions."""
+        scanner = self._make_scanner()
+        scanner.record_execution_outcome('standard_liquidation', 1, 'aave_v3', False)
+        fb = scanner._execution_feedback['standard_liquidation:1:aave_v3']
+        assert fb['successes'] == 0
+        assert fb['failures'] == 1
+        assert fb['rate'] == 0.0
+
+    def test_execution_feedback_mixed_rate(self):
+        """Success rate calculation with mixed results."""
+        scanner = self._make_scanner()
+        scanner.record_execution_outcome('cross_chain_arb', 1, 'uniswap', True, 50.0)
+        scanner.record_execution_outcome('cross_chain_arb', 1, 'uniswap', True, 30.0)
+        scanner.record_execution_outcome('cross_chain_arb', 1, 'uniswap', False)
+        fb = scanner._execution_feedback['cross_chain_arb:1:uniswap']
+        assert fb['successes'] == 2
+        assert fb['failures'] == 1
+        assert abs(fb['rate'] - 2/3) < 0.01
+
+    def test_get_feedback_score_unknown_returns_1(self):
+        """Unknown vector+chain+protocol returns 1.0 (no penalty for untested)."""
+        scanner = self._make_scanner()
+        assert scanner.get_feedback_score('unknown_vector', 999, 'unknown_proto') == 1.0
+
+    def test_get_feedback_score_after_recording(self):
+        """get_feedback_score returns the computed rate."""
+        scanner = self._make_scanner()
+        scanner.record_execution_outcome('standard_liquidation', 1, 'aave_v3', True, 100.0)
+        scanner.record_execution_outcome('standard_liquidation', 1, 'aave_v3', False)
+        assert scanner.get_feedback_score('standard_liquidation', 1, 'aave_v3') == 0.5
+
+    def test_vector_stats_updated_by_feedback(self):
+        """Vector stats are updated when recording execution outcomes."""
+        scanner = self._make_scanner()
+        scanner.record_execution_outcome('standard_liquidation', 1, 'aave_v3', True, 50.0)
+        scanner.record_execution_outcome('standard_liquidation', 1, 'aave_v3', False)
+        stats = scanner.vector_stats['standard_liquidation']
+        assert stats['executed'] == 1
+        assert stats['failures'] == 1
+        assert stats['profit'] == 50.0
+        assert stats['success_rate'] == 0.5
+
+    # ── Recon Phase Queue Tests ──
+
+    def test_recon_phase_active_on_init(self):
+        """Recon phase is active on scanner initialization."""
+        scanner = self._make_scanner()
+        assert scanner._recon_phase_active is True
+
+    def test_recon_queue_starts_empty(self):
+        """Recon queue starts empty."""
+        scanner = self._make_scanner()
+        assert len(scanner._recon_queue) == 0
+
+    @pytest.mark.asyncio
+    async def test_emit_queues_during_recon_phase(self):
+        """Signals emitted during recon phase are queued, not dispatched."""
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+        scanner = self._make_scanner()
+        scanner._recon_phase_active = True
+
+        callback_called = []
+        async def mock_cb(sig):
+            callback_called.append(sig)
+        scanner._callbacks.append(mock_cb)
+
+        sig = OpportunitySignal(
+            signal_id='test-recon-1',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            expected_value_usd=100.0,
+        )
+        await scanner._emit(sig)
+
+        # Signal should be queued, not dispatched
+        assert len(scanner._recon_queue) == 1
+        assert len(callback_called) == 0
+
+    @pytest.mark.asyncio
+    async def test_emit_direct_after_recon_phase(self):
+        """Signals emitted after recon phase are dispatched directly."""
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+        scanner = self._make_scanner()
+        scanner._recon_phase_active = False
+
+        callback_called = []
+        async def mock_cb(sig):
+            callback_called.append(sig)
+        scanner._callbacks.append(mock_cb)
+
+        sig = OpportunitySignal(
+            signal_id='test-direct-1',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            expected_value_usd=100.0,
+        )
+        await scanner._emit(sig)
+
+        # Signal should be dispatched directly
+        assert len(scanner._recon_queue) == 0
+        assert len(callback_called) == 1
+
+    @pytest.mark.asyncio
+    async def test_flush_recon_queue_sorts_by_profit(self):
+        """Flush sorts queued signals by net_profit_usd descending."""
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+        scanner = self._make_scanner()
+        scanner._recon_phase_active = True
+
+        dispatched = []
+        async def mock_cb(sig):
+            dispatched.append(sig.signal_id)
+        scanner._callbacks.append(mock_cb)
+
+        # Queue signals with different profits
+        for i, profit in enumerate([50.0, 200.0, 10.0, 500.0, 100.0]):
+            sig = OpportunitySignal(
+                signal_id=f'test-q-{i}',
+                signal_type=SignalType.LIQUIDATION,
+                source_module=SignalSource.ENHANCED_DETECTOR,
+                chain_id=1,
+                expected_value_usd=profit,
+                net_profit_usd=profit,
+            )
+            await scanner._emit(sig)
+
+        assert len(scanner._recon_queue) == 5
+
+        # Flush
+        await scanner._flush_recon_queue()
+
+        # Should dispatch in profit-priority order (500, 200, 100, 50, 10)
+        assert len(dispatched) == 5
+        assert dispatched[0] == 'test-q-3'  # $500
+        assert dispatched[1] == 'test-q-1'  # $200
+        assert dispatched[2] == 'test-q-4'  # $100
+        assert dispatched[3] == 'test-q-0'  # $50
+        assert dispatched[4] == 'test-q-2'  # $10
+
+    @pytest.mark.asyncio
+    async def test_flush_recon_queue_clears_queue(self):
+        """After flush, the recon queue is empty."""
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+        scanner = self._make_scanner()
+        scanner._recon_phase_active = True
+
+        async def noop(sig):
+            pass
+        scanner._callbacks.append(noop)
+
+        sig = OpportunitySignal(
+            signal_id='test-clear',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            expected_value_usd=100.0,
+            net_profit_usd=100.0,
+        )
+        await scanner._emit(sig)
+        assert len(scanner._recon_queue) == 1
+
+        await scanner._flush_recon_queue()
+        assert len(scanner._recon_queue) == 0
+
+    # ── Gas Retry Queue Tests ──
+
+    def test_gas_retry_queue_starts_empty(self):
+        """Gas retry queue starts empty."""
+        scanner = self._make_scanner()
+        assert len(scanner._gas_retry_queue) == 0
+
+    def test_gas_retry_queue_accepts_signal(self):
+        """queue_gas_retry adds a signal to the retry queue."""
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+        scanner = self._make_scanner()
+        sig = OpportunitySignal(
+            signal_id='test-gas-retry',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            expected_value_usd=100.0,
+            net_profit_usd=50.0,
+        )
+        scanner.queue_gas_retry(sig)
+        assert len(scanner._gas_retry_queue) == 1
+
+    def test_gas_retry_queue_evicts_lowest_profit_when_full(self):
+        """When retry queue is full, lowest-profit entry is evicted."""
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+        scanner = self._make_scanner()
+        scanner._max_retry_queue_size = 3
+
+        for i, profit in enumerate([100.0, 200.0, 300.0]):
+            sig = OpportunitySignal(
+                signal_id=f'test-retry-{i}',
+                signal_type=SignalType.LIQUIDATION,
+                source_module=SignalSource.ENHANCED_DETECTOR,
+                chain_id=1,
+                net_profit_usd=profit,
+            )
+            scanner.queue_gas_retry(sig)
+
+        assert len(scanner._gas_retry_queue) == 3
+
+        # Add one more — should evict lowest ($100)
+        new_sig = OpportunitySignal(
+            signal_id='test-retry-new',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            net_profit_usd=150.0,
+        )
+        scanner.queue_gas_retry(new_sig)
+        assert len(scanner._gas_retry_queue) == 3
+
+    # ── Status Report Tests ──
+
+    def test_status_report_includes_new_fields(self):
+        """Status report includes recon and feedback state."""
+        scanner = self._make_scanner()
+        report = scanner.status_report()
+        assert 'recon_phase_active' in report
+        assert 'recon_queue_size' in report
+        assert 'gas_retry_queue_size' in report
+        assert 'execution_feedback_keys' in report
+        assert report['recon_phase_active'] is True
+        assert report['recon_queue_size'] == 0
+        assert report['gas_retry_queue_size'] == 0
+
+    # ── Recon Sweep Duration Config ──
+
+    def test_recon_sweep_duration_default(self):
+        """Default recon sweep duration is 120 seconds."""
+        scanner = self._make_scanner()
+        assert scanner._recon_sweep_duration == 120.0
+
+    def test_recon_sweep_duration_configurable(self):
+        """Recon sweep duration is configurable via config."""
+        scanner = self._make_scanner({'recon_sweep_seconds': 60})
+        assert scanner._recon_sweep_duration == 60.0
+
+
+class TestFeedbackAdjustedPriority:
+    """Validates that execution feedback adjusts priority scoring."""
+
+    @pytest.mark.asyncio
+    async def test_high_feedback_boosts_priority(self):
+        """High feedback score (>0.8) boosts priority by 1."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.scanner.get_feedback_score.return_value = 0.95  # High feedback
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        sig = OpportunitySignal(
+            signal_id='test-boost',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            expected_value_usd=100.0,
+            gross_profit_usd=100.0,
+            confidence=0.9,
+            net_profit_usd=50.0,
+            estimated_cost_usd=5.0,
+            metadata={
+                'vector': 'standard_liquidation',
+                'user': '0xA968eC40f51e842a9C71FbaaA906B029147469f0',
+                'protocol': 'aave_v3',
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+        assert engine.opportunities_executed == 1
+
+        # The submit call should have been called with boosted priority
+        call_args = engine.execution_manager.submit.call_args
+        priority = call_args.kwargs.get('priority', call_args[1].get('priority', 5))
+        # Base priority computed from _compute_priority is high, feedback adds +1
+        assert priority >= 6  # boosted
+
+    @pytest.mark.asyncio
+    async def test_low_feedback_skips_low_confidence(self):
+        """Low feedback score (<0.3) combined with low confidence (<0.5) → skip."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.scanner.get_feedback_score.return_value = 0.2  # Low feedback
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        sig = OpportunitySignal(
+            signal_id='test-skip-low',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            expected_value_usd=100.0,
+            gross_profit_usd=100.0,
+            confidence=0.3,  # Low confidence
+            net_profit_usd=50.0,
+            estimated_cost_usd=5.0,
+            metadata={
+                'vector': 'standard_liquidation',
+                'user': '0xA968eC40f51e842a9C71FbaaA906B029147469f0',
+                'protocol': 'aave_v3',
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+        assert engine.opportunities_skipped == 1
+        assert engine.opportunities_executed == 0
+        engine.execution_manager.submit.assert_not_called()
+
+
+class TestConfidenceMetadataPropagation:
+    """Validates that confidence and feedback scores propagate to execution metadata."""
+
+    @pytest.mark.asyncio
+    async def test_metadata_includes_confidence_and_feedback(self):
+        """Execution request metadata includes confidence and feedback_score."""
+        from unittest.mock import MagicMock, AsyncMock
+        from profit_engine.triangulated_profit_engine import TriangulatedProfitEngine
+        from omni_channel.data_lake.data_models import (
+            OpportunitySignal, SignalType, SignalSource,
+        )
+
+        engine = object.__new__(TriangulatedProfitEngine)
+        engine.is_running = True
+        engine.opportunities_received = 0
+        engine.opportunities_executed = 0
+        engine.opportunities_skipped = 0
+        engine.consecutive_errors = 0
+        engine.scanner = MagicMock()
+        engine.scanner.min_profit_usd = 0.01
+        engine.scanner.min_confidence = 0.01
+        engine.scanner.get_feedback_score.return_value = 0.75
+        engine.gas_optimizer = MagicMock()
+        engine.flash_loan_router = MagicMock()
+        engine.flash_loan_router.find_best_route.return_value = None
+        engine.heat_map = MagicMock()
+        engine.capital_multiplier = MagicMock()
+        engine.capital_multiplier.get_position_size.return_value = 0
+        engine.execution_manager = AsyncMock()
+        engine.ledger = MagicMock()
+        engine.ledger.current_phase = MagicMock(value='phase_1_cold_start')
+
+        sig = OpportunitySignal(
+            signal_id='test-meta',
+            signal_type=SignalType.LIQUIDATION,
+            source_module=SignalSource.ENHANCED_DETECTOR,
+            chain_id=1,
+            target_contract='0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2',
+            expected_value_usd=200.0,
+            gross_profit_usd=200.0,
+            confidence=0.85,
+            net_profit_usd=100.0,
+            estimated_cost_usd=10.0,
+            metadata={
+                'vector': 'standard_liquidation',
+                'user': '0xA968eC40f51e842a9C71FbaaA906B029147469f0',
+                'protocol': 'aave_v3',
+            },
+        )
+
+        await engine._handle_opportunity(sig)
+        assert engine.opportunities_executed == 1
+
+        # Check the request metadata
+        call_args = engine.execution_manager.submit.call_args
+        request = call_args[0][0]
+        assert request.metadata['confidence'] == 0.85
+        assert request.metadata['feedback_score'] == 0.75
+
+
 # ============================================================================
 # Run Tests
 # ============================================================================
