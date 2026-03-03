@@ -346,6 +346,13 @@ Examples:
   python main.py --scan-only          # Detection only, no execution
   python main.py --status             # Show current system status
   python main.py --pipeline           # Run full Module 1 stage-gated pipeline
+  python main.py --hub status         # Show consolidated module registry
+  python main.py --hub recon          # Run unified recon sweep across all modules
+  python main.py --hub full_pipeline  # Deploy via consolidated hub
+  python main.py --hub ops_full_recon      # Full tactical recon operation
+  python main.py --hub ops_target_acquire  # Target acquisition sweep
+  python main.py --hub ops_system_check    # System health check
+  python main.py --hub ops_phase2_activate # Activate Phase 2 modules
         """,
     )
     parser.add_argument(
@@ -368,6 +375,14 @@ Examples:
         '--pipeline', action='store_true',
         help='Run the full Module 1 stage-gated pipeline',
     )
+    parser.add_argument(
+        '--hub', type=str, nargs='?', const='status', default=None,
+        metavar='STRATEGY',
+        help='Launch via consolidated hub. Strategies: status, preflight, '
+             'recon, scan_only, phase_1, phase_2, phase_3, full_pipeline, '
+             'monitor, ops_full_recon, ops_target_acquire, ops_system_check, '
+             'ops_phase2_activate',
+    )
     return parser.parse_args()
 
 
@@ -377,6 +392,18 @@ Examples:
 
 async def async_main():
     args = parse_args()
+
+    # ── Hub (consolidated command center) ───────────────────────────
+    if args.hub is not None:
+        from hub import DeploymentStrategy, deploy as hub_deploy
+        try:
+            strategy = DeploymentStrategy(args.hub)
+        except ValueError:
+            valid = ", ".join(s.value for s in DeploymentStrategy)
+            print(f"  Unknown hub strategy: {args.hub!r}")
+            print(f"  Valid strategies: {valid}")
+            return 1
+        return await hub_deploy(strategy, scan_only=args.scan_only)
 
     # ── Status check ────────────────────────────────────────────────
     if args.status:
