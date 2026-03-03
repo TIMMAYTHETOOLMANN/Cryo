@@ -155,17 +155,18 @@ class IncentiveFeasibilityCalculator:
             params.debt_amount, params.debt_price_usd, params.debt_decimals
         )
 
-        # 2. Collateral seized = debt * (1 + bonus%)
+        # 2. Collateral seized USD = debt_repay_usd * (1 + bonus%)
+        #    In cross-asset liquidations, the protocol converts debt to collateral
+        #    at oracle prices, so the bonus applies to the USD value.
         bonus_multiplier = Decimal("1") + Decimal(params.liquidation_bonus_bps) / Decimal("10000")
-        collateral_seized_tokens = params.debt_amount * bonus_multiplier
+        result.collateral_seized_usd = result.debt_repay_usd * bonus_multiplier
 
-        # Cap at available collateral
-        if collateral_seized_tokens > params.collateral_amount:
-            collateral_seized_tokens = params.collateral_amount
-
-        result.collateral_seized_usd = self._token_value_usd(
-            collateral_seized_tokens, params.collateral_price_usd, params.collateral_decimals
+        # Cap at available collateral value
+        available_collateral_usd = self._token_value_usd(
+            params.collateral_amount, params.collateral_price_usd, params.collateral_decimals
         )
+        if result.collateral_seized_usd > available_collateral_usd:
+            result.collateral_seized_usd = available_collateral_usd
 
         # 3. Gross incentive
         if result.collateral_seized_usd > result.debt_repay_usd:
