@@ -506,7 +506,7 @@ class TestTacticalOps:
         ops = TacticalOps(reg)
         report = await ops.execute("full_recon")
         assert report.operation == "full_recon"
-        assert len(report.steps) >= 4  # init_recon, init_detect, init_analysis, sweep, rank
+        assert len(report.steps) >= 5  # init_recon, init_detect, init_analysis, sweep, rank
         assert report.passed >= 4
 
     @pytest.mark.asyncio

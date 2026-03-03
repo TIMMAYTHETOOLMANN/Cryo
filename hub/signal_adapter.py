@@ -178,10 +178,11 @@ def m9_to_omni(signal) -> Any:
         trigger_tx_hash=signal.tx_hash or None,
         debt_asset=signal.target_asset or None,
         collateral_asset=signal.target_asset or None,
-        debt_amount=int(signal.debt_amount_usd * 1e18 / max(signal.estimated_profit_usd, 1))
-            if signal.debt_amount_usd else 0,
-        collateral_amount=int(signal.collateral_amount_usd * 1e18 / max(signal.estimated_profit_usd, 1))
-            if signal.collateral_amount_usd else 0,
+        # Debt/collateral amounts are stored as M9 USD values; the raw
+        # wei amounts are unavailable at this layer, so we pass zero and
+        # let downstream stages recalculate from on-chain data.
+        debt_amount=0,
+        collateral_amount=0,
         health_factor=signal.health_factor,
         metadata=meta,
         timestamp=int(signal.timestamp),
@@ -235,10 +236,29 @@ def omni_to_m9(signal) -> Any:
         liquidation_bonus=signal.metadata.get("liquidation_bonus", 0.0),
         competition_estimate=signal.competition_estimate,
         execution_complexity=signal.execution_complexity / 10.0,
-        quality_score=signal.quality_score() if callable(getattr(signal, 'quality_score', None)) else 0.0,
+        quality_score=_safe_quality_score(signal),
         routed_to=signal.routed_to.value if signal.routed_to else "",
         metadata=meta,
     )
+
+
+# ── Helpers ────────────────────────────────────────────────────────
+
+def _safe_quality_score(signal) -> float:
+    """Extract quality_score from an Omni-Channel signal safely.
+
+    ``quality_score`` is a method on the Omni-Channel dataclass but
+    a plain float attribute on Module 9.  Handle both gracefully.
+    """
+    qs = getattr(signal, "quality_score", None)
+    if qs is None:
+        return 0.0
+    if callable(qs):
+        try:
+            return float(qs())
+        except Exception:
+            return 0.0
+    return float(qs)
 
 
 # ── Signal Bridge ──────────────────────────────────────────────────

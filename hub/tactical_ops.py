@@ -162,6 +162,7 @@ class TacticalOps:
         # Step 2: Recon sweep
         coord = ReconCoordinator(self._registry)
         coord._initialized = True  # we already init'd above
+        results: List[ReconResult] = []
         t0 = time.time()
         try:
             results = await coord.run_sweep(chain_ids=chain_ids, timeout=30.0)
@@ -184,7 +185,7 @@ class TacticalOps:
             [r for r in results if r.estimated_value_usd > 0],
             key=lambda r: r.estimated_value_usd,
             reverse=True,
-        ) if 'results' in dir() else []
+        )
 
         step = StepResult(
             name="rank_results",
