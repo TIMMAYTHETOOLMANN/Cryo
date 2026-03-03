@@ -304,7 +304,16 @@ class OpportunityScanner:
     @staticmethod
     def _signal_profit(signal: OpportunitySignal) -> float:
         """Extract the best available profit estimate from a signal."""
-        return signal.net_profit_usd or signal.expected_value_usd or 0.0
+        # Prefer realized net profit when available, falling back to expected value.
+        net_profit = getattr(signal, "net_profit_usd", None)
+        if net_profit is not None:
+            return net_profit
+
+        expected_value = getattr(signal, "expected_value_usd", None)
+        if expected_value is not None:
+            return expected_value
+
+        return 0.0
 
     async def _flush_recon_queue(self):
         """Sort accumulated reconnaissance targets by profit priority and emit in order."""
@@ -355,10 +364,18 @@ class OpportunityScanner:
             retryable = []
             for signal in self._gas_retry_queue:
                 # Re-check if gas is now affordable
+                gross_profit_usd = signal.gross_profit_usd
+                if gross_profit_usd is None:
+                    # Fall back to expected value if gross profit is unavailable
+                    gross_profit_usd = (
+                        signal.expected_value_usd
+                        if signal.expected_value_usd is not None
+                        else 0.0
+                    )
                 gas_est = self.gas_optimizer.estimate(
                     signal.chain_id,
                     signal.metadata.get('vector', 'liquidation'),
-                    signal.net_profit_usd or signal.expected_value_usd or 0,
+                    gross_profit_usd,
                 )
                 if gas_est.is_profitable_at_current:
                     signal.estimated_cost_usd = gas_est.gas_cost_usd

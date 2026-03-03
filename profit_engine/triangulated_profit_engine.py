@@ -256,7 +256,11 @@ class TriangulatedProfitEngine:
                     signal.metadata['flash_pool'] = flash_route.pool_address
 
             # ── Step 4: Final profitability gate ──
-            total_cost = signal.estimated_cost_usd
+            # Strip any scanner-baked flash fee from estimated_cost_usd to avoid double-counting
+            # when the engine computes its own flash route. estimated_cost_usd should reflect
+            # gas costs only; flash fees are added exclusively by the engine's route below.
+            scanner_flash_fee = signal.metadata.get('flash_fee_usd', 0.0)
+            total_cost = signal.estimated_cost_usd - scanner_flash_fee
             if flash_route:
                 total_cost += flash_route.fee_usd
 
@@ -265,6 +269,8 @@ class TriangulatedProfitEngine:
                 # Queue for gas retry if net loss is small (<$5) and there's real gross profit (>$1);
                 # this captures opportunities that are only temporarily unprofitable due to gas spikes.
                 if final_profit > -5.0 and signal.gross_profit_usd > 1.0:
+                    # Persist the final net profit so the gas retry queue uses a consistent profitability metric
+                    signal.net_profit_usd = final_profit
                     self.scanner.queue_gas_retry(signal)
                 self.opportunities_skipped += 1
                 return
