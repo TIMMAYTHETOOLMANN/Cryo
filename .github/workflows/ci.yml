@@ -23,7 +23,7 @@ jobs:
         run: forge build
 
       - name: Run unit tests
-        run: forge test -vvv --match-contract "CollateralizationDetectorTest|CrossChainDetectorTest|LiquidationExecutorTest|LiquidationExecutorV3Test|CollateralHealthMonitorTest|RiskMitigationExecutorTest|IncentiveFeasibilityCalculatorTest"
+        run: forge test -vvv --match-contract "CollateralizationDetectorTest|CrossChainDetectorTest|LiquidationExecutorTest|LiquidationExecutorV3Test|CollateralHealthMonitorTest|RiskMitigationExecutorTest|IncentiveFeasibilityCalculatorTest|FinancialExecutorTest"
 
       - name: Run mainnet scanner (dry run)
         run: forge script script/MainnetScanner.s.sol:MainnetScanner --rpc-url "${MAINNET_RPC_URL}" -vvv
