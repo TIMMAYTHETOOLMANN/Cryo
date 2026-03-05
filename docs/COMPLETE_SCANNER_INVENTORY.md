@@ -19,8 +19,8 @@
 | 5 | **Profit Monitor** | `liquidation_engine/monitor.py` | Treasury tracking | ✅ READY |
 | 6 | **Enhanced Monitor** | `liquidation_engine/enhanced_monitor.py` | Enhanced profit monitoring | ✅ READY |
 | 7 | **Simple Monitor** | `liquidation_engine/simple_monitor.py` | Basic monitoring | ✅ READY |
-| 8 | **Dynamic Recon** | `dynamic_recon.py` | Dynamic reconnaissance | ✅ READY |
-| 9 | **Swiss Army Knife** | `swiss_army_knife.py` | Unified entry point | ✅ READY |
+| 8 | **Hub Tactical Recon** | `python main.py --hub ops_full_recon` | Dynamic reconnaissance | ✅ READY |
+| 9 | **Master Orchestrator** | `python main.py --master` | All modules in parallel | ✅ READY |
 | 10 | **Target Acquisition** | `target_acquisition_scanner.py` | Multi-opportunity scanner | ✅ READY |
 | 11 | **Quick Scan** | `quick_scan.py` | Fast single-pass scan | ✅ READY |
 
@@ -90,11 +90,11 @@ python quick_scan.py                  # Fast scan
 
 # Omni-Channel
 python omni_channel/omni_orchestrator.py  # Full orchestrator
-python activate_phase2_modules.py         # Phase 2 only
+python main.py --hub ops_phase2_activate  # Phase 2 only
 
-# Standalone
-python dynamic_recon.py          # Reconnaissance
-python swiss_army_knife.py       # Unified entry
+# Master (all modules in parallel)
+python main.py --master             # Maximum extraction
+python main.py --hub ops_full_recon # Reconnaissance
 ```
 
 ### **Option 3: Foundry Scanners**
@@ -252,7 +252,7 @@ python quick_scan.py
 python omni_channel/omni_orchestrator.py
 ```
 
-#### 11. Phase 2 Modules (`activate_phase2_modules.py`)
+#### 11. Phase 2 Modules (Hub Tactical Op)
 **Purpose:** Activate Phase 2 discovery modules
 
 **Modules:**
@@ -264,13 +264,13 @@ python omni_channel/omni_orchestrator.py
 - Protocol Classification
 
 ```bash
-python activate_phase2_modules.py
+python main.py --hub ops_phase2_activate
 ```
 
 ### **Standalone Scanners**
 
-#### 12. Dynamic Recon (`dynamic_recon.py`)
-**Purpose:** Dynamic reconnaissance engine
+#### 12. Hub Tactical Recon
+**Purpose:** Dynamic reconnaissance via hub tactical operations
 
 **Features:**
 - Contract discovery
@@ -280,19 +280,21 @@ python activate_phase2_modules.py
 **Scan Interval:** 5 minutes
 
 ```bash
-python dynamic_recon.py
+python main.py --hub ops_full_recon
 ```
 
-#### 13. Swiss Army Knife (`swiss_army_knife.py`)
-**Purpose:** Unified entry point for entire system
+#### 13. Master Profit Orchestrator
+**Purpose:** Unified entry point — all modules in parallel for maximum extraction
 
 **Features:**
-- Coordinates all scanners
+- Coordinates all scanners concurrently
+- Signal aggregation with deduplication
 - Execution bridge integration
-- Signal routing
+- Live P&L dashboard
 
 ```bash
-python swiss_army_knife.py
+python main.py --master
+python main.py --master --scan-only  # Detection only
 ```
 
 ---
@@ -343,7 +345,7 @@ python master_scanner_controller.py --modules \
 | **Reserve Protocol** | target_acquisition, MainnetScanner, DeepDiveScanner |
 | **DEX Arb** | target_acquisition, quick_scan, phase2_modules |
 | **Mempool Opportunities** | mempool_sniffer, enhanced_detector, omni_orchestrator |
-| **New Protocols** | phase2_modules, dynamic_recon, ContractCrawler |
+| **New Protocols** | ops_phase2_activate, hub ops_full_recon, ContractCrawler |
 | **MEV Patterns** | phase2_modules, StaticAnalyzer |
 
 ---
