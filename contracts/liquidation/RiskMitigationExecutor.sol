@@ -13,8 +13,8 @@ pragma solidity ^0.8.19;
 //    - MakerDAO Dog.bark() support via adapter pattern (Module 4)
 // ============================================================================
 
-import "./interfaces/ILiquidationAdapter.sol";
-import "./interfaces/IChainlinkOracle.sol";
+import "../interfaces/ILiquidationAdapter.sol";
+import "../interfaces/IChainlinkOracle.sol";
 
 // ─── Minimal ERC-20 interface ─────────────────────────────────────────────────
 interface IERC20RME {

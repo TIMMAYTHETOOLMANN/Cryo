@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-CONTINUOUS PROFIT MONITOR - 5 Profit Mission
-Monitors deployed executors and tracks progress toward 5 verified profits
+CONTINUOUS PROFIT MONITOR - 100 Transaction Mission
+Monitors deployed executors and tracks progress toward 100 verified profits
 """
 
 import time
@@ -10,12 +10,12 @@ from datetime import datetime
 from web3 import Web3
 
 # Configuration
-RPC_URL = "https://eth.llamarpc.com"  # Public RPC fallback
+RPC_URL = "https://base-mainnet.g.alchemy.com/v2/Rc0sle99H0nN5Sm3C3JyfeAmqYz4hmlu"
 TREASURY = '0xB323C6E32C6efe28FB9cfB1A83F4071c544eA1e4'
 EXECUTORS = {
-    'V1': '0x76dF81F4E3F6058DD6a9c0a6ed2f224b49375B9f',
-    'V2': '0xFf11E1d641f2ED7aD98629F04d1e103Ff6B44890',
-    'FLASH_ARB': '0x3D270b0F5f79F7C61AC2d0Ed9fD93074B4a3fc84',
+    'V1': '0xA968eC40f51e842a9C71FbaaA906B029147469f0',
+    'V2': '0x77c069CF41EcD6f282b34DA316597901CCfB2cf6',
+    'FLASH_ARB': '0xc16bF067F7218efCdeA022FB3481eBa66F5d6bc4',
 }
 
 # ABI for events
@@ -30,7 +30,7 @@ FLASH_ARB_ABI = json.loads('''
 class ContinuousMonitor:
     def __init__(self):
         self.w3 = Web3(Web3.HTTPProvider(RPC_URL))
-        self.target_profits = 5
+        self.target_profits = 100
         self.verified_profits = 0
         self.last_block = self.w3.eth.block_number
         self.start_time = time.time()
@@ -52,7 +52,7 @@ class ContinuousMonitor:
                 )
         
         print("=" * 70)
-        print("  CONTINUOUS PROFIT MONITOR - 5 Profit Mission")
+        print("  CONTINUOUS PROFIT MONITOR - 100 Transaction Mission")
         print("=" * 70)
         print(f"Target: {self.target_profits} verified profits")
         print(f"Treasury: {TREASURY}")

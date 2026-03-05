@@ -200,21 +200,19 @@ class TriangulatedProfitEngine:
         """
         Core pipeline: receive opportunity → validate → size → route → execute.
         This is called by the scanner for every detected opportunity.
-
-        Enhancements:
-        - Uses execution feedback to deprioritize failing vector/chain/protocol combos
-        - Queues gas-rejected opportunities for retry when gas drops
-        - Preserves confidence scores in execution metadata
         """
         self.opportunities_received += 1
+        opp_id = signal.metadata.get('opportunity_id', 'unknown')[:8]
+        print(f"   📥 Signal {opp_id}: type={signal.signal_type.value} chain={signal.chain_id} profit=${signal.net_profit_usd:.2f} conf={signal.confidence:.2f}")
 
         try:
             # ── Step 1: Validate signal quality ──
-            # Ultra-aggressive: accept nearly everything, let simulate-before-send filter
             if signal.confidence < 0.01:
+                print(f"   ⚠️ Signal {opp_id} rejected: low confidence ({signal.confidence:.2f})")
                 self.opportunities_skipped += 1
                 return
             if signal.net_profit_usd < 0.01:
+                print(f"   ⚠️ Signal {opp_id} rejected: low net profit (${signal.net_profit_usd:.2f})")
                 self.opportunities_skipped += 1
                 return
 
@@ -287,6 +285,7 @@ class TriangulatedProfitEngine:
 
             final_profit = signal.gross_profit_usd - total_cost
             if final_profit < 0.01:  # Accept anything net-positive
+                print(f"   ⚠️ Signal {opp_id} rejected: final profit ${final_profit:.2f} (gross=${signal.gross_profit_usd:.2f}, cost=${total_cost:.2f})")
                 # Queue for gas retry if net loss is small (<$5) and there's real gross profit (>$1);
                 # this captures opportunities that are only temporarily unprofitable due to gas spikes.
                 if final_profit > -5.0 and signal.gross_profit_usd > 1.0:

@@ -71,7 +71,7 @@ contract MainnetScanner is Script {
         _addRToken(ETH_PLUS);
         _addRToken(E_USD);
         _addRToken(0xaCdf0DBA4B9839b96221a8487e9ca660a48212be); // hyUSD
-        _addRToken(0xCC7FF230365bD730eE4B352cC2492CEdAC49383e); // USD3
+        _addRToken(0xCc7FF230365bD730eE4B352cC2492CEdAC49383e); // USD3
         _addRToken(0x78da5799CF427Fee11e9996982F4150eCe7a99A7); // dgnETH
 
         // Adaptive discovery

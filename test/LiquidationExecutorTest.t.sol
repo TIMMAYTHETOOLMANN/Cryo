@@ -78,7 +78,7 @@ contract MockAavePool {
 
     constructor(MockERC20 debtTok, MockERC20 collTok) {
         _debtToken = debtTok;
-        _collTok   = collTok;
+        _collToken = collTok;
     }
 
     function setCollateralReturn(uint256 amount) external {
@@ -401,7 +401,7 @@ contract ReentrantPool {
         _debtToken.mint(receiverAddress, amount);
 
         // Attempt reentrant call — must revert with REENTRANCY
-        LiquidationExecutor(_target).executeLiquidation(
+        LiquidationExecutor(payable(_target)).executeLiquidation(
             _debtAsset, 1, address(_collToken), address(0x2), 0
         );
 

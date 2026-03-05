@@ -193,7 +193,10 @@ class ExecutionManager:
                 # Emit callback
                 await self._emit_completion(result)
 
-                print(f"   ✅ Execution {queued.request.request_id[:8]}... completed: {result.status.value}")
+                status_icon = "✅" if result.status == ExecutionStatus.CONFIRMED else "❌"
+                err_info = f" | Error: {result.error_message}" if result.error_message else ""
+                tx_info = f" | Tx: {result.tx_hash}" if result.tx_hash else ""
+                print(f"   {status_icon} Execution {queued.request.request_id[:8]}... completed: {result.status.value}{err_info}{tx_info}")
 
             except Exception as e:
                 print(f"   ⚠️  Queue processing error: {e}")

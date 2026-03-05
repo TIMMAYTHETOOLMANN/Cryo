@@ -38,8 +38,8 @@ class CrossChainExecutor(ExecutionInterface):
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
         self._w3_providers: Dict[int, Web3] = {}
-        self._bridge_contracts: Dict[str, Dict] = {}
         self._pending_executions: Dict[str, List[ChainExecution]] = {}
+        self.private_key = os.getenv('PRIVATE_KEY')
 
     @property
     def name(self) -> str:
@@ -175,8 +175,9 @@ class CrossChainExecutor(ExecutionInterface):
                     await asyncio.sleep(1)
 
                 # Build transaction for this chain
+                account = w3.eth.account.from_key(self.private_key)
                 tx_params = {
-                    'from': w3.eth.default_account or '0x' + '0' * 40,
+                    'from': account.address,
                     'to': request.target_contract,
                     'data': request.calldata,
                     'value': request.value,
@@ -188,8 +189,8 @@ class CrossChainExecutor(ExecutionInterface):
                     tx_params['nonce'] = request.nonce
 
                 try:
-                    signed_tx = w3.eth.account.sign_transaction(tx_params, '0x' + '0' * 64)
-                    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+                    signed_tx = w3.eth.account.sign_transaction(tx_params, self.private_key)
+                    tx_hash = await asyncio.to_thread(w3.eth.send_raw_transaction, signed_tx.raw_transaction)
 
                     chain_exec = ChainExecution(
                         chain_id=chain_id,
@@ -223,7 +224,8 @@ class CrossChainExecutor(ExecutionInterface):
                     continue
 
                 try:
-                    receipt = w3.eth.wait_for_transaction_receipt(
+                    receipt = await asyncio.to_thread(
+                        w3.eth.wait_for_transaction_receipt,
                         exec_data.tx_hash,
                         timeout=300
                     )

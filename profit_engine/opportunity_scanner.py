@@ -87,7 +87,20 @@ CHAINLINK_ORACLES = {
         'ETH/USD': '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419',
         'BTC/USD': '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c',
         'LINK/USD': '0x2c1d072e956AFFC0D435Cb7AC38EF18d24d9127c',
+        'USDC/USD': '0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6',
     },
+    8453: {
+        'ETH/USD': '0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70',
+        'USDC/USD': '0x7e8648a8806220677F678508e8EBe5763071b782',
+    },
+    10: {
+        'ETH/USD': '0x13e3Ee699D1909E989722E753853AE30b17e08c5',
+        'USDC/USD': '0x16a9FEaCfFA43AdeCc6612dd74348590ecAb9794',
+    },
+    42161: {
+        'ETH/USD': '0x639Fe6ab55C939f4930680b556f0597271017801',
+        'USDC/USD': '0x50834F3163758fcC1Df9973b6e91f0C0bd525C23',
+    }
 }
 
 # NFT lending protocols
@@ -1512,8 +1525,8 @@ class OpportunityScanner:
 
                     try:
                         current_block = w3.eth.block_number
-                        # Scan last 10000 blocks (~33h on mainnet, more on L2s)
-                        from_block = max(0, current_block - 10000)
+                        # Scan last 100000 blocks (~2.3d on Base, ~13.8d on Mainnet)
+                        from_block = max(0, current_block - 100000)
 
                         # Use raw getLogs for maximum Alchemy/RPC compatibility
                         logs = w3.eth.get_logs({

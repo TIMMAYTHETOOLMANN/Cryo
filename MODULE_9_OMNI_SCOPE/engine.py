@@ -130,8 +130,11 @@ class OmniScopeEngine:
         await self.archive_indexer.stop()
         await self.alpha_seeker.stop()
 
-        for task in self._tasks:
-            task.cancel()
+        tasks = getattr(self, "_tasks", None)
+        if tasks:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
         logger.info("Module 9 Omni-Scope stopped.")
 

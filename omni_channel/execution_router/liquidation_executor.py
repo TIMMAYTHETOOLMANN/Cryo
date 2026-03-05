@@ -562,13 +562,13 @@ class LiquidationExecutor(ExecutionInterface):
         ).build_transaction({
             'from': account.address,
             'gas': request.gas_limit or 500000,
-            'gasPrice': request.gas_price or w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address),
+            'gasPrice': request.gas_price or await asyncio.to_thread(lambda: w3.eth.gas_price),
+            'nonce': await asyncio.to_thread(w3.eth.get_transaction_count, account.address),
         })
 
         # PRODUCTION: Sign and send immediately. Chain decides. No simulation.
         signed_tx = w3.eth.account.sign_transaction(tx, self.private_key)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        tx_hash = await asyncio.to_thread(w3.eth.send_raw_transaction, signed_tx.raw_transaction)
         print(f"   📡 TX broadcast: {tx_hash.hex()[:16]}...")
 
         return tx_hash.hex()
@@ -605,13 +605,13 @@ class LiquidationExecutor(ExecutionInterface):
         ).build_transaction({
             'from': account.address,
             'gas': request.gas_limit or 800000,
-            'gasPrice': request.gas_price or w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address),
+            'gasPrice': request.gas_price or await asyncio.to_thread(lambda: w3.eth.gas_price),
+            'nonce': await asyncio.to_thread(w3.eth.get_transaction_count, account.address),
         })
 
         # Sign and send
         signed_tx = w3.eth.account.sign_transaction(arbitrage_tx, self.private_key)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+        tx_hash = await asyncio.to_thread(w3.eth.send_raw_transaction, signed_tx.raw_transaction)
         
         return tx_hash.hex()
 
