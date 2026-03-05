@@ -97,29 +97,26 @@ python -c "import os; from dotenv import load_dotenv; load_dotenv(); print('PRIV
 
 ## Running the System
 
-### Option 1: Swiss Army Knife (Unified Entry Point)
+### Option 1: Master Orchestrator (All Modules in Parallel)
 
 ```bash
-# Start the unified system
-python swiss_army_knife.py
+# Start all profit modules in parallel — maximum extraction
+python main.py --master
 
 # Scan-only mode (no execution)
-python swiss_army_knife.py --scan-only
+python main.py --master --scan-only
 ```
 
 ### Option 2: Individual Modules
 
 ```bash
-# Start Omni-Channel orchestrator
-cd omni_channel
-python omni_orchestrator.py
+# Phase-gated execution
+python main.py --phase 1   # Zero-capital flash loans
+python main.py --pipeline   # Full Module 1 pipeline
 
-# Run dynamic reconnaissance
-python dynamic_recon.py
-
-# Start liquidation detector
-cd liquidation_engine
-python enhanced_detector.py
+# Hub deployment strategies
+python main.py --hub recon            # Reconnaissance sweep
+python main.py --hub ops_full_recon   # Full tactical recon
 ```
 
 ### Option 3: Smart Contract Deployment
@@ -287,8 +284,8 @@ Cryo1/
 ├── .env                         # Environment configuration
 ├── .env.template                # Environment template
 ├── requirements.txt             # Python dependencies
-├── swiss_army_knife.py          # Unified entry point
-└── dynamic_recon.py             # Reconnaissance engine
+├── main.py                      # Unified entry point
+└── master_orchestrator.py       # All modules in parallel
 ```
 
 ---
@@ -297,7 +294,7 @@ Cryo1/
 
 1. **Configure Environment** - Add your RPC URLs and private key
 2. **Test Connection** - Verify RPC and contract connections
-3. **Run Scanner** - Start with `python swiss_army_knife.py --scan-only`
+3. **Run Scanner** - Start with `python main.py --master --scan-only`
 4. **Monitor Opportunities** - Watch for detected opportunities
 5. **Execute** - When profitable opportunity found, system will execute
 

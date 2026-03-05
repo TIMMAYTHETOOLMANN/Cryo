@@ -194,9 +194,9 @@ class TestDeploymentStrategy:
     def test_all_strategies_defined(self):
         expected = {
             "status", "preflight", "recon", "scan_only",
-            "phase_1", "phase_2", "phase_3", "full_pipeline", "monitor",
-            "ops_full_recon", "ops_target_acquire", "ops_system_check",
-            "ops_phase2_activate",
+            "phase_1", "phase_2", "phase_3", "full_pipeline", "master",
+            "monitor", "ops_full_recon", "ops_target_acquire",
+            "ops_system_check", "ops_phase2_activate",
         }
         actual = {s.value for s in DeploymentStrategy}
         assert expected == actual
