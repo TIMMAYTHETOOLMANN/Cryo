@@ -16,6 +16,7 @@ Strategies:
   PHASE_2       Heat Map — pattern learning + frequency optimisation.
   PHASE_3       Capital Multiplier — exponential compounding reinvestment.
   FULL_PIPELINE Module 1 stage-gated pipeline (Stages 0-7 + Module 9).
+  MASTER        All modules in parallel — maximum profit extraction.
   MONITOR       Continuous profit monitor — watch executor events.
 
 Usage::
@@ -55,6 +56,7 @@ class DeploymentStrategy(Enum):
     PHASE_2 = "phase_2"
     PHASE_3 = "phase_3"
     FULL_PIPELINE = "full_pipeline"
+    MASTER = "master"
     MONITOR = "monitor"
     # Tactical operations
     OPS_FULL_RECON = "ops_full_recon"
@@ -121,6 +123,10 @@ async def deploy(
     if strategy == DeploymentStrategy.FULL_PIPELINE:
         return await _run_full_pipeline(scan_only=scan_only)
 
+    # ── MASTER (all modules in parallel) ──────────────────────
+    if strategy == DeploymentStrategy.MASTER:
+        return await _run_master(scan_only=scan_only)
+
     # ── MONITOR ───────────────────────────────────────────────
     if strategy == DeploymentStrategy.MONITOR:
         return await _run_monitor()
@@ -181,4 +187,15 @@ async def _run_monitor() -> int:
         return 0
     except Exception as exc:
         logger.error("Monitor error: %s", exc)
+        return 1
+
+
+async def _run_master(scan_only: bool = False) -> int:
+    """Launch the MasterProfitOrchestrator with all modules in parallel."""
+    try:
+        from master_orchestrator import MasterProfitOrchestrator
+        orchestrator = MasterProfitOrchestrator({"scan_only": scan_only})
+        return await orchestrator.run()
+    except Exception as exc:
+        logger.error("Master orchestrator error: %s", exc)
         return 1

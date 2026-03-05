@@ -18,6 +18,7 @@
 ║    python main.py --preflight       # Run preflight checks only      ║
 ║    python main.py --scan-only       # Detection only (no execution)  ║
 ║    python main.py --status          # Show system status             ║
+║    python main.py --master          # ALL modules in parallel        ║
 ╚══════════════════════════════════════════════════════════════════════╝
 """
 
@@ -346,8 +347,11 @@ Examples:
   python main.py --scan-only          # Detection only, no execution
   python main.py --status             # Show current system status
   python main.py --pipeline           # Run full Module 1 stage-gated pipeline
+  python main.py --master             # ALL modules in parallel (max extraction)
+  python main.py --master --scan-only # All modules, detection only
   python main.py --hub status         # Show consolidated module registry
   python main.py --hub recon          # Run unified recon sweep across all modules
+  python main.py --hub master         # All modules via hub deployment
   python main.py --hub full_pipeline  # Deploy via consolidated hub
   python main.py --hub ops_full_recon      # Full tactical recon operation
   python main.py --hub ops_target_acquire  # Target acquisition sweep
@@ -383,8 +387,12 @@ Examples:
         metavar='STRATEGY',
         help='Launch via consolidated hub. Strategies: status, preflight, '
              'recon, scan_only, phase_1, phase_2, phase_3, full_pipeline, '
-             'monitor, ops_full_recon, ops_target_acquire, ops_system_check, '
-             'ops_phase2_activate',
+             'master, monitor, ops_full_recon, ops_target_acquire, '
+             'ops_system_check, ops_phase2_activate',
+    )
+    parser.add_argument(
+        '--master', action='store_true',
+        help='Launch Master Profit Orchestrator — all modules in parallel',
     )
     parser.add_argument(
         '--fire', type=str, nargs='*', default=None,
@@ -481,6 +489,14 @@ async def async_main():
     # ── Full Module 1 pipeline ──────────────────────────────────────
     if args.pipeline:
         return await run_module1_pipeline(scan_only=args.scan_only)
+
+    # ── Master Profit Orchestrator ─────────────────────────────────
+    if args.master:
+        from master_orchestrator import MasterProfitOrchestrator
+        orchestrator = MasterProfitOrchestrator(
+            {"scan_only": args.scan_only}
+        )
+        return await orchestrator.run()
 
     # ── Phase-gated execution ───────────────────────────────────────
     assessor = SituationAssessor()
