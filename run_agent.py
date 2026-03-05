@@ -165,8 +165,6 @@ def run_diagnostics():
         print("")
         print("  Quick-start options:")
         print("    Ollama:    ollama serve  &&  ollama pull llama3")
-	@FindBy(css="")
-	private WebElement webElement;
         print("    LM Studio: Start app -> Download model -> Start server")
         print("    llama.cpp: ./server -m model.gguf --port 8080")
 

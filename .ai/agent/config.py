@@ -353,4 +353,80 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "branch_thought",
+            "description": "Create a branch to explore an alternative solution path. Use when the current approach may not be optimal and you want to evaluate alternatives.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "branch_name": {"type": "string", "description": "Name for this alternative path"},
+                    "description": {"type": "string", "description": "Why this branch is being explored"},
+                    "from_step": {"type": "string", "description": "Step ID to branch from (default: current step)", "default": ""},
+                },
+                "required": ["branch_name", "description"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revise_thought",
+            "description": "Revise a previous thought step with updated understanding. Use when new information contradicts an earlier assumption.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "original_step_id": {"type": "string", "description": "The step ID to revise"},
+                    "revised_thought": {"type": "string", "description": "The corrected or updated thought"},
+                    "reason": {"type": "string", "description": "Why the revision is needed", "default": ""},
+                },
+                "required": ["original_step_id", "revised_thought"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_thinking_state",
+            "description": "Get the current sequential thinking chain state — all active, completed, and failed steps with a human-readable chain-of-thought summary.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_completed": {"type": "boolean", "description": "Include completed steps in output", "default": True},
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_live_activity",
+            "description": "Get the most recent live activity log entries showing what the agent has been doing (tool calls, terminal output, errors, recovery events).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "lines": {"type": "integer", "description": "Number of recent log lines to return", "default": 50},
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "request_approval",
+            "description": "Request explicit user approval for a critical action (deployment, production push, mainnet transaction, etc). Execution PAUSES until approved. Only use for deployment-critical operations.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "description": "The specific action that needs approval"},
+                    "reason": {"type": "string", "description": "Why this action requires human approval"},
+                    "risk_level": {"type": "string", "enum": ["medium", "high", "critical"], "description": "Risk level of the action", "default": "critical"},
+                },
+                "required": ["action", "reason"]
+            }
+        }
+    },
 ]

@@ -91,6 +91,11 @@ class ToolExecutor:
             "task_complete": self._task_complete,
             "sequential_think": self._sequential_think,
             "complete_thought": self._complete_thought,
+            "branch_thought": self._branch_thought,
+            "revise_thought": self._revise_thought,
+            "get_thinking_state": self._get_thinking_state,
+            "get_live_activity": self._get_live_activity,
+            "request_approval": self._request_approval,
             "precheck_action": self._precheck_action,
         }
 
@@ -522,6 +527,97 @@ class ToolExecutor:
             }, default=str)}
         except Exception as e:
             return {"success": True, "output": f"Precheck: proceed (analyzer unavailable: {e})"}
+
+    def _branch_thought(self, branch_name: str, description: str,
+                        from_step: str = "", **kwargs) -> Dict:
+        try:
+            if not hasattr(self, '_thinker'):
+                from .config import LOGS_DIR
+                from .sequential_thinking import SequentialThinkingEngine
+                self._thinker = SequentialThinkingEngine(log_dir=LOGS_DIR)
+            result = self._thinker.branch_thought(
+                branch_name, description, from_step or None
+            )
+            return {"success": True, "output": json.dumps(result, default=str)}
+        except Exception as e:
+            return {"success": False, "output": f"branch_thought error: {e}"}
+
+    def _revise_thought(self, original_step_id: str, revised_thought: str,
+                        reason: str = "", **kwargs) -> Dict:
+        try:
+            if not hasattr(self, '_thinker'):
+                from .config import LOGS_DIR
+                from .sequential_thinking import SequentialThinkingEngine
+                self._thinker = SequentialThinkingEngine(log_dir=LOGS_DIR)
+            result = self._thinker.revise_thought(original_step_id, revised_thought, reason)
+            return {"success": True, "output": json.dumps(result, default=str)}
+        except Exception as e:
+            return {"success": False, "output": f"revise_thought error: {e}"}
+
+    def _get_thinking_state(self, include_completed: bool = True, **kwargs) -> Dict:
+        try:
+            if not hasattr(self, '_thinker'):
+                from .config import LOGS_DIR
+                from .sequential_thinking import SequentialThinkingEngine
+                self._thinker = SequentialThinkingEngine(log_dir=LOGS_DIR)
+            state = self._thinker.get_state(include_completed)
+            state["chain_of_thought"] = self._thinker.get_chain_of_thought()
+            return {"success": True, "output": json.dumps(state, default=str)}
+        except Exception as e:
+            return {"success": False, "output": f"get_thinking_state error: {e}"}
+
+    def _get_live_activity(self, lines: int = 50, **kwargs) -> Dict:
+        try:
+            from .config import LOGS_DIR
+            log_file = LOGS_DIR / "live_stream.log"
+            if not log_file.exists():
+                return {"success": True, "output": "No live activity log found. The live stream has not started yet."}
+            all_lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            recent = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            return {"success": True, "output": f"=== Recent Activity ({len(recent)} lines) ===\n" + "\n".join(recent)}
+        except Exception as e:
+            return {"success": False, "output": f"get_live_activity error: {e}"}
+
+    def _request_approval(self, action: str, reason: str,
+                          risk_level: str = "critical", **kwargs) -> Dict:
+        try:
+            import time as _time
+            from .config import LOGS_DIR
+            approval_file = LOGS_DIR / "pending_approval.json"
+            approval_data = {
+                "action": action,
+                "reason": reason,
+                "risk_level": risk_level,
+                "requested_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": "PENDING",
+            }
+            approval_file.write_text(
+                json.dumps(approval_data, indent=2), encoding="utf-8"
+            )
+            if _LIVE_STREAM_AVAILABLE:
+                try:
+                    get_stream().emit("approval_requested", {
+                        "action": action, "reason": reason, "risk_level": risk_level,
+                    }, source="gate")
+                except Exception:
+                    pass
+            return {
+                "success": True,
+                "output": json.dumps({
+                    "status": "APPROVAL_REQUIRED",
+                    "action": action,
+                    "reason": reason,
+                    "risk_level": risk_level,
+                    "instruction": (
+                        "STOP EXECUTION. This action requires explicit user approval. "
+                        f"Approval file written to: {approval_file}\n"
+                        "Do NOT proceed with this action until the user approves. "
+                        "Continue working on other non-critical tasks if available."
+                    ),
+                }),
+            }
+        except Exception as e:
+            return {"success": False, "output": f"request_approval error: {e}"}
 
     # ════════════════════════════════════════════════════════════════
     #  TASK COMPLETION SIGNAL

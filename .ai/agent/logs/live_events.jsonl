@@ -1,0 +1,1 @@
+{"timestamp": "23:43:26.889", "source": "gate", "type": "approval_requested", "data": {"action": "Deploy to mainnet", "reason": "Production deployment", "risk_level": "critical"}}
