@@ -22,7 +22,10 @@ from .config import AgentConfig, TOOL_SCHEMAS
 from .tools import ToolExecutor
 from .self_heal import SelfHealEngine
 from .session_manager import SessionManager
-from .system_prompt import build_system_prompt
+try:
+    from .system_prompt_v3 import build_system_prompt
+except ImportError:
+    from .system_prompt import build_system_prompt
 
 # ── LiveStream for real-time visibility ──────────────────────────
 try:

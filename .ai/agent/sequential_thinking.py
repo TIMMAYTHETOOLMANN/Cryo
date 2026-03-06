@@ -527,6 +527,74 @@ class SequentialThinkingEngine:
             "chain_summary": self._get_chain_summary(self.active_branch),
         }
 
+    # ────────────────────────────────────────────────────────────────
+    #  STATE INSPECTION
+    # ────────────────────────────────────────────────────────────────
+
+    def get_thinking_state(self, branch_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Retrieve the complete thinking state for inspection and review.
+        Returns all steps, branches, dependencies, and confidence scores.
+        """
+        target_branch = branch_id or self.active_branch
+        if target_branch not in self.branches:
+            return {"error": f"Branch '{target_branch}' not found"}
+
+        branch = self.branches[target_branch]
+        branch_steps = [self.steps[sid] for sid in branch.steps if sid in self.steps]
+
+        return {
+            "task": self.task_description,
+            "active_branch": self.active_branch,
+            "target_branch": target_branch,
+            "branch_info": {
+                "id": branch.id,
+                "name": branch.name,
+                "description": branch.description,
+                "status": branch.status.value,
+                "confidence": branch.confidence,
+                "total_steps": len(branch.steps),
+            },
+            "steps": [
+                {
+                    "id": s.id,
+                    "thought": s.thought[:200],
+                    "type": s.thought_type.value,
+                    "status": s.status.value,
+                    "confidence": s.confidence,
+                    "parent": s.parent_id,
+                    "depends_on": s.depends_on,
+                    "children": s.children,
+                    "result": s.result[:100] if s.result else None,
+                    "error": s.error[:100] if s.error else None,
+                }
+                for s in branch_steps
+            ],
+            "all_branches": [
+                {
+                    "id": b.id,
+                    "name": b.name,
+                    "description": b.description,
+                    "status": b.status.value,
+                    "confidence": b.confidence,
+                    "step_count": len(b.steps),
+                }
+                for b in self.branches.values()
+            ],
+            "stats": {
+                "total_steps": len(self.steps),
+                "total_branches": len(self.branches),
+                "completed": sum(1 for s in self.steps.values() if s.status == StepStatus.COMPLETED),
+                "active": sum(1 for s in self.steps.values() if s.status == StepStatus.ACTIVE),
+                "failed": sum(1 for s in self.steps.values() if s.status == StepStatus.FAILED),
+                "pending": sum(1 for s in self.steps.values() if s.status == StepStatus.PENDING),
+            }
+        }
+
+    # ────────────────────────────────────────────────────────────────
+    #  CHAIN SUMMARY & INSPECTION
+    # ────────────────────────────────────────────────────────────────
+
     def get_chain_of_thought(self, branch_id: Optional[str] = None) -> str:
         """Get a human-readable chain-of-thought for the specified branch."""
         bid = branch_id or self.active_branch

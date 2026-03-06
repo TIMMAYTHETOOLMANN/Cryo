@@ -92,6 +92,10 @@ class ToolExecutor:
             "sequential_think": self._sequential_think,
             "complete_thought": self._complete_thought,
             "precheck_action": self._precheck_action,
+            "branch_thought": self._branch_thought,
+            "revise_thought": self._revise_thought,
+            "get_thinking_state": self._get_thinking_state,
+            "resolve_branch": self._resolve_branch,
         }
 
         handler = handler_map.get(tool_name)
@@ -522,6 +526,48 @@ class ToolExecutor:
             }, default=str)}
         except Exception as e:
             return {"success": True, "output": f"Precheck: proceed (analyzer unavailable: {e})"}
+
+    def _branch_thought(self, branch_name: str, description: str,
+                        from_step: str = None, **kwargs) -> Dict:
+        """Create a branch to explore an alternative solution path."""
+        try:
+            if hasattr(self, '_thinker'):
+                res = self._thinker.branch_thought(branch_name, description, from_step)
+                return {"success": True, "output": json.dumps(res, default=str)}
+        except Exception as e:
+            return {"success": False, "output": f"Branch creation failed: {e}"}
+        return {"success": True, "output": f"Branch '{branch_name}' created for exploration"}
+
+    def _revise_thought(self, original_step_id: str, revised_thought: str,
+                        reason: str = "", confidence: float = 0.8, **kwargs) -> Dict:
+        """Revise a previous thought with updated understanding."""
+        try:
+            if hasattr(self, '_thinker'):
+                res = self._thinker.revise_thought(original_step_id, revised_thought, reason, confidence)
+                return {"success": True, "output": json.dumps(res, default=str)}
+        except Exception as e:
+            return {"success": False, "output": f"Revision failed: {e}"}
+        return {"success": True, "output": f"Thought revised based on: {reason}"}
+
+    def _get_thinking_state(self, branch_id: str = None, **kwargs) -> Dict:
+        """Get the current state of the thinking chain."""
+        try:
+            if hasattr(self, '_thinker'):
+                state = self._thinker.get_thinking_state(branch_id)
+                return {"success": True, "output": json.dumps(state, default=str, indent=2)}
+        except Exception as e:
+            return {"success": False, "output": f"Could not retrieve thinking state: {e}"}
+        return {"success": True, "output": "Thinking state unavailable"}
+
+    def _resolve_branch(self, winning_branch: str, reason: str = "", **kwargs) -> Dict:
+        """Merge a branch into the main thinking line."""
+        try:
+            if hasattr(self, '_thinker'):
+                res = self._thinker.resolve_branch(winning_branch, reason)
+                return {"success": True, "output": json.dumps(res, default=str)}
+        except Exception as e:
+            return {"success": False, "output": f"Branch resolution failed: {e}"}
+        return {"success": True, "output": f"Branch '{winning_branch}' merged: {reason}"}
 
     # ════════════════════════════════════════════════════════════════
     #  TASK COMPLETION SIGNAL

@@ -353,4 +353,65 @@ TOOL_SCHEMAS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "branch_thought",
+            "description": "Create a new branch in the thinking chain to explore an alternative solution path. Use when you want to test multiple hypotheses.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "branch_name": {"type": "string", "description": "Name for this branch (e.g., 'approach_a', 'fallback_strategy')"},
+                    "description": {"type": "string", "description": "What this branch explores"},
+                    "from_step": {"type": "string", "description": "Step ID to branch from (optional, defaults to last step)"},
+                },
+                "required": ["branch_name", "description"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revise_thought",
+            "description": "Revise a previous thought with updated understanding. Use when you gain new information that changes earlier reasoning.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "original_step_id": {"type": "string", "description": "The step ID to revise"},
+                    "revised_thought": {"type": "string", "description": "The updated reasoning"},
+                    "reason": {"type": "string", "description": "Why you're revising (e.g., 'new error found', 'test results show...')"},
+                    "confidence": {"type": "number", "description": "New confidence 0.0-1.0", "default": 0.8},
+                },
+                "required": ["original_step_id", "revised_thought"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_thinking_state",
+            "description": "Retrieve the current state of your thinking chain (all steps, branches, status). Use to review progress and dependencies.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "branch_id": {"type": "string", "description": "Optional: get state for specific branch (default: current branch)"},
+                },
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "resolve_branch",
+            "description": "Merge the winning branch back into main. Use after exploring alternatives with branch_thought to consolidate the best path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "winning_branch": {"type": "string", "description": "The branch ID that had the best approach"},
+                    "reason": {"type": "string", "description": "Why this branch won"},
+                },
+                "required": ["winning_branch"]
+            }
+        }
+    },
 ]
