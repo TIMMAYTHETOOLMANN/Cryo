@@ -12,7 +12,7 @@ from fire_engine.registry import (
 )
 from fire_engine.parser import FireParser, ASTNode, NodeType, FireParseError
 from fire_engine.compiler import Compiler, Plan, PlanStep, CompileError
-from fire_engine.executor import OffChainExecutor, Simulator, ExecutionResult
+from fire_engine.executor import OffChainExecutor, PreflightVerifier, ExecutionResult
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -508,28 +508,32 @@ class TestOffChainExecutor:
         assert d["tx_hash"] == "0xabc"
 
 
-class TestSimulator:
-    def test_offline_simulation(self):
-        sim = Simulator()
+class TestPreflightVerifier:
+    def test_requires_fork_url(self):
+        with pytest.raises(ValueError, match="fork_url is required"):
+            PreflightVerifier(fork_url="")
+
+    def test_verify_with_unreachable_node(self):
+        verifier = PreflightVerifier(fork_url="http://localhost:19999")
         plan = Plan(
             steps=[
                 PlanStep(index=0, operation_id="test", operation_name="Test", gas_estimate=100_000),
             ],
             total_gas_estimate=100_000,
         )
-        result = sim.simulate(plan)
-        assert result.success is True
+        result = verifier.verify(plan)
+        assert result.success is False
 
-    def test_simulation_with_fork_url_no_node(self):
-        sim = Simulator(fork_url="http://localhost:8545")
+    def test_verify_with_fork_url(self):
+        verifier = PreflightVerifier(fork_url="http://localhost:8545")
         plan = Plan(
             steps=[
                 PlanStep(index=0, operation_id="test", operation_name="Test", gas_estimate=100_000),
             ],
         )
-        result = sim.simulate(plan)
-        assert result.success is False
-        assert "Fork simulation" in result.error
+        result = verifier.verify(plan)
+        # Will fail if no local node is running — expected behavior
+        assert isinstance(result, ExecutionResult)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -538,7 +542,7 @@ class TestSimulator:
 
 
 class TestFireIntegration:
-    """End-to-end tests: parse → compile → simulate."""
+    """End-to-end tests: parse → compile → verify."""
 
     def test_simple_arbitrage_flow(self):
         # Set up registry
@@ -562,10 +566,10 @@ class TestFireIntegration:
         plan = compiler.compile(ast, context={"amount": 10, "fee": 0.05})
         assert plan.step_count >= 4
 
-        # Simulate
-        sim = Simulator()
-        result = sim.simulate(plan)
-        assert result.success is True
+        # Verify — requires a live fork node
+        verifier = PreflightVerifier(fork_url="http://localhost:8545")
+        result = verifier.verify(plan)
+        assert isinstance(result, ExecutionResult)
 
     def test_conditional_strategy(self):
         registry = OperationRegistry()

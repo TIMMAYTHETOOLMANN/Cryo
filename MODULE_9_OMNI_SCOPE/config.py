@@ -51,22 +51,22 @@ class StaticAnalysisConfig:
 
 @dataclass
 class BridgeMonitorConfig:
-    max_hops: int = 4
-    min_arb_profit_usd: float = 25.0
+    max_hops: int = 6
+    min_arb_profit_usd: float = 2.0
     max_bridge_time_seconds: int = 600
-    pathfinding_interval_seconds: int = 10
+    pathfinding_interval_seconds: int = 5
 
 
 @dataclass
 class MLRankerConfig:
     model_type: str = "gradient_boosting"  # or "logistic", "neural"
-    min_quality_score: float = 0.3
-    competition_decay_seconds: float = 2.0
+    min_quality_score: float = 0.15
+    competition_decay_seconds: float = 1.0
     feature_weights: Dict[str, float] = field(default_factory=lambda: {
-        "expected_value": 0.35,
-        "competition": 0.25,
-        "complexity": 0.20,
-        "gas_cost": 0.20,
+        "expected_value": 0.40,
+        "competition": 0.20,
+        "complexity": 0.15,
+        "gas_cost": 0.25,
     })
 
 
@@ -94,8 +94,8 @@ class AlphaSeekerConfig:
 @dataclass
 class ZeroCapitalConfig:
     bootstrap_enabled: bool = True
-    min_bootstrap_profit_usd: float = 50.0
-    gas_self_fund_pct: float = 0.10  # Reserve 10% of profit for gas
+    min_bootstrap_profit_usd: float = 2.0
+    gas_self_fund_pct: float = 0.05  # Reserve 5% of profit for gas (lean ops)
 
 
 class OmniScopeConfig:

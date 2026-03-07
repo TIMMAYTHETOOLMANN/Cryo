@@ -169,7 +169,7 @@ class SituationAssessor:
         elif phase == 3:
             print("║" + "".ljust(68) + "║")
             print("║" + "  Strategy: Exponential compounding reinvestment".ljust(68) + "║")
-            print("║" + "  • 60% profit reinvested into larger positions".ljust(68) + "║")
+            print("║" + "  • 80% profit reinvested into larger positions".ljust(68) + "║")
             print("║" + "  • Cross-chain arbitrage with accumulated capital".ljust(68) + "║")
             print("║" + "  • Target: $3.2M-$12.1M per 24 hours".ljust(68) + "║")
 
@@ -222,22 +222,24 @@ async def run_phase(phase: int, scan_only: bool = False):
 
     # ── Phase-specific tuning ───────────────────────────────────────
     if phase == 1:
-        # Maximum aggression — accept any net-positive trade
+        # FULL CAPACITY — accept any net-positive trade, scan at max speed
         config['scanner']['min_profit_usd'] = 0.01
         config['scanner']['min_confidence'] = 0.10
-        config['scanner']['scan_interval'] = 2.0
+        config['scanner']['scan_interval'] = 0.5
         config['gas']['min_margin_percent'] = 0.01
         config['gas']['min_margin_usd'] = 0.01
         config['execution']['liquidation']['min_profit_usd'] = 0.01
+        config['multiplier']['reinvest_rate'] = 0.80
     elif phase == 2:
-        config['scanner']['min_profit_usd'] = 5.0
-        config['scanner']['min_confidence'] = 0.3
-        config['scanner']['scan_interval'] = 3.0
+        config['scanner']['min_profit_usd'] = 2.0
+        config['scanner']['min_confidence'] = 0.20
+        config['scanner']['scan_interval'] = 0.5
+        config['multiplier']['reinvest_rate'] = 0.80
     elif phase == 3:
-        config['scanner']['min_profit_usd'] = 25.0
-        config['scanner']['min_confidence'] = 0.5
-        config['scanner']['scan_interval'] = 5.0
-        config['multiplier']['reinvest_rate'] = 0.60
+        config['scanner']['min_profit_usd'] = 10.0
+        config['scanner']['min_confidence'] = 0.3
+        config['scanner']['scan_interval'] = 0.5
+        config['multiplier']['reinvest_rate'] = 0.80
 
     # ── Banner ──────────────────────────────────────────────────────
     phase_names = {1: "COLD START", 2: "HEAT MAP", 3: "CAPITAL MULTIPLIER"}
@@ -493,9 +495,13 @@ async def async_main():
     # ── Master Profit Orchestrator ─────────────────────────────────
     if args.master:
         from master_orchestrator import MasterProfitOrchestrator
-        orchestrator = MasterProfitOrchestrator(
-            {"scan_only": args.scan_only}
-        )
+        orchestrator = MasterProfitOrchestrator({
+            "scan_only": args.scan_only,
+            "cycle_interval": float(os.getenv("SCAN_INTERVAL", "1")),
+            "min_profit_usd": float(os.getenv("MIN_PROFIT_USD", "0.50")),
+            "execution_enabled": os.getenv("EXECUTION_ENABLED", "true").lower() == "true",
+            "reinvest_rate": float(os.getenv("REINVEST_RATE", "0.80")),
+        })
         return await orchestrator.run()
 
     # ── Phase-gated execution ───────────────────────────────────────

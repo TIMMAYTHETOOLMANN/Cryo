@@ -75,6 +75,13 @@ class IncentiveParams:
     gas_price_wei: int             # Current gas price
     native_token_price_usd: Decimal  # ETH price in USD
     gas_buffer_pct: Decimal = Decimal("1.2")  # 20% gas buffer
+    # LP token pricing (Alpha Homora fair valuation)
+    is_lp_token: bool = False      # True if collateral is LP token
+    lp_reserve0: Decimal = Decimal("0")
+    lp_reserve1: Decimal = Decimal("0")
+    lp_price0_usd: Decimal = Decimal("0")
+    lp_price1_usd: Decimal = Decimal("0")
+    lp_total_supply: Decimal = Decimal("0")
 
 
 @dataclass
@@ -163,7 +170,7 @@ class IncentiveFeasibilityCalculator:
 
         # Cap at available collateral value
         available_collateral_usd = self._token_value_usd(
-            params.collateral_amount, params.collateral_price_usd, params.collateral_decimals
+            params.collateral_amount, self._get_collateral_price(params), params.collateral_decimals
         )
         if result.collateral_seized_usd > available_collateral_usd:
             result.collateral_seized_usd = available_collateral_usd
@@ -287,3 +294,109 @@ class IncentiveFeasibilityCalculator:
     ) -> Decimal:
         """Convert a token amount to USD value."""
         return (amount * price_usd) / (Decimal(10) ** decimals)
+
+    # ── LP Token Fair Pricing (Alpha Homora Formula) ─────────────────
+
+    @staticmethod
+    def fair_lp_price_usd(
+        reserve0: Decimal,
+        reserve1: Decimal,
+        price0_usd: Decimal,
+        price1_usd: Decimal,
+        total_supply: Decimal,
+    ) -> Decimal:
+        """
+        Manipulation-resistant LP token pricing via Alpha Homora formula.
+
+        fair_price = 2 * sqrt(k) * sqrt(p) / totalSupply
+        where k = reserve0 * reserve1, p = price0 * price1
+
+        This is immune to flash loan reserve manipulation unlike naive
+        (r0*p0 + r1*p1) / totalSupply.
+        """
+        if total_supply <= 0:
+            return Decimal("0")
+
+        k = reserve0 * reserve1
+        p = price0_usd * price1_usd
+        sqrt_k = k.sqrt()
+        sqrt_p = p.sqrt()
+
+        return (Decimal("2") * sqrt_k * sqrt_p) / total_supply
+
+    def _get_collateral_price(self, params: IncentiveParams) -> Decimal:
+        """
+        Get collateral price — uses Alpha Homora for LP tokens,
+        direct oracle price otherwise.
+        """
+        if params.is_lp_token and params.lp_total_supply > 0:
+            lp_fair = self.fair_lp_price_usd(
+                params.lp_reserve0, params.lp_reserve1,
+                params.lp_price0_usd, params.lp_price1_usd,
+                params.lp_total_supply,
+            )
+            if lp_fair > 0:
+                logger.debug(
+                    "LP fair price: $%s (oracle: $%s)",
+                    lp_fair, params.collateral_price_usd,
+                )
+                # Use the LOWER of fair price and oracle price (conservative)
+                return min(lp_fair, params.collateral_price_usd)
+        return params.collateral_price_usd
+
+    # ── Pre-Submission Gas Recheck ───────────────────────────────────
+
+    def recheck_feasibility_at_submission(
+        self,
+        original_result: 'FeasibilityResult',
+        current_gas_price_wei: int,
+        current_native_price_usd: Decimal,
+        original_params: IncentiveParams,
+    ) -> 'FeasibilityResult':
+        """
+        Re-validate feasibility immediately before TX submission.
+
+        Gas prices can spike between detection and submission.
+        This prevents unprofitable executions by recalculating with
+        CURRENT gas price at submission time.
+
+        Args:
+            original_result: Previously computed feasibility
+            current_gas_price_wei: Live gas price at submission time
+            current_native_price_usd: Live ETH/native price
+            original_params: Original calculation parameters
+
+        Returns:
+            Updated FeasibilityResult (may flip is_feasible to False)
+        """
+        if not original_result.is_feasible:
+            return original_result
+
+        # Recalculate gas cost with current prices
+        gas_cost_wei = Decimal(original_params.estimated_gas_units) * Decimal(current_gas_price_wei)
+        gas_cost_eth = gas_cost_wei / Decimal("1000000000000000000")
+        new_gas_cost_usd = gas_cost_eth * current_native_price_usd * original_params.gas_buffer_pct
+
+        # Recalculate net incentive
+        total_costs = original_result.flash_loan_fee_usd + new_gas_cost_usd
+        new_net = original_result.gross_incentive_usd - total_costs if original_result.gross_incentive_usd > total_costs else Decimal("0")
+
+        gas_delta = new_gas_cost_usd - original_result.gas_cost_usd
+        if gas_delta > 0:
+            logger.info(
+                "⛽ Gas recheck: +$%s cost (was $%s, now $%s) — net $%s",
+                gas_delta, original_result.gas_cost_usd, new_gas_cost_usd, new_net,
+            )
+
+        return FeasibilityResult(
+            is_feasible=new_net >= self.MIN_INCENTIVE_USD,
+            collateral_seized_usd=original_result.collateral_seized_usd,
+            debt_repay_usd=original_result.debt_repay_usd,
+            gross_incentive_usd=original_result.gross_incentive_usd,
+            flash_loan_fee_usd=original_result.flash_loan_fee_usd,
+            gas_cost_usd=new_gas_cost_usd,
+            net_incentive_usd=new_net,
+            is_bad_debt=original_result.is_bad_debt,
+            best_provider=original_result.best_provider,
+            provider_savings_usd=original_result.provider_savings_usd,
+        )

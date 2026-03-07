@@ -115,6 +115,28 @@ QUOTER_ABI = json.loads('''[
 # Fee tiers for Uniswap V3
 FEE_TIERS = [500, 3000, 10000]  # 0.05%, 0.3%, 1%
 
+# SushiSwap V2 / Uniswap V2 Router addresses (for cross-DEX arbs)
+SUSHI_V2_ROUTERS: Dict[int, str] = {
+    1:     "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F",  # SushiSwap
+    42161: "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",  # SushiSwap Arb
+    137:   "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",  # SushiSwap Polygon
+}
+
+UNI_V2_ROUTERS: Dict[int, str] = {
+    1:     "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",  # Uniswap V2
+    8453:  "0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24",  # Aerodrome (Base)
+}
+
+V2_ROUTER_ABI = json.loads('''[
+    {"inputs":[
+        {"name":"amountIn","type":"uint256"},
+        {"name":"path","type":"address[]"}
+    ],
+    "name":"getAmountsOut",
+    "outputs":[{"name":"amounts","type":"uint256[]"}],
+    "stateMutability":"view","type":"function"}
+]''')
+
 
 # ────────────────────────────────────────────────────────────────────────
 # DEX Arbitrage Scanner
@@ -136,17 +158,46 @@ class DexArbScanner:
         self.config = config or get_config()
         self.w3_providers: Dict[int, Web3] = {}
         self.quoters: Dict[int, any] = {}  # chain_id → quoter contract
+        self.v2_routers: Dict[int, List[tuple]] = {}  # chain_id → [(name, contract)]
         self.stats = {
             "scans": 0,
             "opportunities_found": 0,
             "total_profit_usd": 0.0,
+            "cross_dex_checks": 0,
             "start_time": time.time(),
         }
 
         # Min profit after gas/fees to be worth executing
         self.min_profit_usd = float(
-            __import__("os").getenv("ARB_MIN_PROFIT_USD", "15")
+            __import__("os").getenv("ARB_MIN_PROFIT_USD", "0.01")
         )
+
+        # L2 chains have much lower gas, so lower the threshold
+        self._l2_chains = {42161, 10, 8453, 137}  # Arbitrum, Optimism, Base, Polygon
+        self.min_profit_usd_l2 = float(
+            __import__("os").getenv("ARB_MIN_PROFIT_USD_L2", "0.01")
+        )
+
+    def _estimate_gas_usd(self, chain_id: int, gas_units: int = 350_000) -> float:
+        """Estimate gas cost in USD using live gas price, not hardcoded values."""
+        w3 = self.w3_providers.get(chain_id)
+        if not w3:
+            return 0.50  # Conservative fallback
+        try:
+            gas_price_wei = w3.eth.gas_price
+            gas_price_gwei = gas_price_wei / 1e9
+            eth_price = 2000.0  # Will be updated from oracle
+            gas_cost_eth = (gas_units * gas_price_wei) / 1e18
+            return gas_cost_eth * eth_price
+        except Exception:
+            # Fallback: use realistic defaults (not $5-8!)
+            if chain_id in self._l2_chains:
+                return 0.02  # L2s are sub-cent
+            return 0.10  # ETH mainnet at low gas
+
+    def _flash_loan_fee(self, amount_usd: float) -> float:
+        """Flash loan fee — Balancer charges 0%, so effectively free."""
+        return 0.0  # Balancer (preferred provider) has 0% flash loan fee
 
     async def initialize(self):
         """Connect to chains and set up quoter contracts."""
@@ -171,9 +222,27 @@ class DexArbScanner:
             except Exception as e:
                 logger.debug(f"DexArb: chain {chain_id} init error: {e}")
 
+        # Initialize V2 routers for cross-DEX arb detection
+        for chain_id, w3 in self.w3_providers.items():
+            routers_for_chain = []
+            for name, router_map in [("SushiV2", SUSHI_V2_ROUTERS), ("UniV2", UNI_V2_ROUTERS)]:
+                addr = router_map.get(chain_id)
+                if addr:
+                    try:
+                        contract = w3.eth.contract(
+                            address=Web3.to_checksum_address(addr),
+                            abi=V2_ROUTER_ABI,
+                        )
+                        routers_for_chain.append((name, contract))
+                    except Exception:
+                        pass
+            if routers_for_chain:
+                self.v2_routers[chain_id] = routers_for_chain
+
         logger.info(
-            f"DEX Arb Scanner ready -- {len(self.quoters)} chains with quoters, "
-            f"min profit ${self.min_profit_usd}"
+            f"DEX Arb Scanner ready -- {len(self.quoters)} V3 chains, "
+            f"{len(self.v2_routers)} V2 chains, "
+            f"min profit L1=${self.min_profit_usd} L2=${self.min_profit_usd_l2}"
         )
 
     async def scan_once(self) -> List[ArbOpportunity]:
@@ -246,18 +315,18 @@ class DexArbScanner:
                             # Approximate ETH price
                             profit_usd = (profit_wei / 1e18) * 2500
 
-                        # Flash loan fee (Aave V3: 0.05%)
-                        flash_fee_usd = (amount_in / (10 ** decimals_a)) * 0.0005
-                        if decimals_a == 18:
-                            flash_fee_usd = (amount_in / 1e18) * 2500 * 0.0005
+                        # Flash loan fee (Balancer: 0%)
+                        flash_fee_usd = self._flash_loan_fee(amount_in / (10 ** decimals_a) if decimals_a != 18 else (amount_in / 1e18) * 2500)
 
-                        # Gas cost estimate
-                        chain_cfg = self.config.get_chain(chain_id)
-                        gas_usd = 5.0 if not chain_cfg or not chain_cfg.is_l2 else 0.10
+                        # Live gas cost estimate
+                        gas_usd = self._estimate_gas_usd(chain_id, 350_000)
 
                         net = profit_usd - flash_fee_usd - gas_usd
 
-                        if net >= self.min_profit_usd:
+                        # Use L2-specific threshold for cheaper chains
+                        min_profit = self.min_profit_usd_l2 if chain_id in self._l2_chains else self.min_profit_usd
+
+                        if net >= min_profit:
                             opp = ArbOpportunity(
                                 chain_id=chain_id,
                                 path=[token_a, token_b, token_a],
@@ -292,6 +361,130 @@ class DexArbScanner:
                     opps.append(opp)
             except Exception:
                 pass
+
+        # Strategy 3: Cross-DEX arb (UniV3 vs SushiV2/UniV2)
+        v2_list = self.v2_routers.get(chain_id, [])
+        if v2_list:
+            for v2_name, v2_contract in v2_list:
+                try:
+                    cross_opps = await self._scan_cross_dex(
+                        chain_id, w3, quoter, v2_name, v2_contract, tokens, block
+                    )
+                    opps.extend(cross_opps)
+                except Exception as e:
+                    logger.debug(f"Cross-DEX scan error {v2_name} chain {chain_id}: {e}")
+
+        return opps
+
+    async def _scan_cross_dex(
+        self, chain_id: int, w3: Web3, v3_quoter, v2_name: str, v2_router,
+        tokens: Dict, block: int,
+    ) -> List[ArbOpportunity]:
+        """
+        Compare UniV3 quotes against V2 router quotes.
+        Buy on the cheaper DEX, sell on the more expensive one.
+        """
+        opps = []
+        pairs = self._get_pairs(tokens)
+        min_profit = self.min_profit_usd_l2 if chain_id in self._l2_chains else self.min_profit_usd
+
+        for token_a_name, token_b_name, token_a, token_b, amount_in, decimals_a in pairs:
+            self.stats["cross_dex_checks"] += 1
+
+            # Get V3 quote (best fee tier)
+            best_v3_out = 0
+            best_v3_fee = 3000
+            for fee in FEE_TIERS:
+                try:
+                    out = v3_quoter.functions.quoteExactInputSingle(
+                        Web3.to_checksum_address(token_a),
+                        Web3.to_checksum_address(token_b),
+                        fee, amount_in, 0
+                    ).call()
+                    if out > best_v3_out:
+                        best_v3_out = out
+                        best_v3_fee = fee
+                except Exception:
+                    pass
+
+            if best_v3_out == 0:
+                continue
+
+            # Get V2 quote
+            try:
+                v2_amounts = v2_router.functions.getAmountsOut(
+                    amount_in,
+                    [Web3.to_checksum_address(token_a), Web3.to_checksum_address(token_b)]
+                ).call()
+                v2_out = v2_amounts[-1]
+            except Exception:
+                continue
+
+            # Check both directions: V3→V2 and V2→V3
+            for buy_dex, buy_out, sell_dex, sell_router, sell_amount in [
+                (f"UniV3-{best_v3_fee}", best_v3_out, v2_name, v2_router, best_v3_out),
+                (v2_name, v2_out, f"UniV3-{best_v3_fee}", v3_quoter, v2_out),
+            ]:
+                # Get reverse quote from sell DEX
+                reverse_out = 0
+                if "UniV3" in sell_dex:
+                    for fee in FEE_TIERS:
+                        try:
+                            out = sell_router.functions.quoteExactInputSingle(
+                                Web3.to_checksum_address(token_b),
+                                Web3.to_checksum_address(token_a),
+                                fee, sell_amount, 0
+                            ).call()
+                            if out > reverse_out:
+                                reverse_out = out
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        amounts = sell_router.functions.getAmountsOut(
+                            sell_amount,
+                            [Web3.to_checksum_address(token_b), Web3.to_checksum_address(token_a)]
+                        ).call()
+                        reverse_out = amounts[-1]
+                    except Exception:
+                        pass
+
+                if reverse_out <= amount_in:
+                    continue
+
+                profit_wei = reverse_out - amount_in
+                if "USDC" in token_a_name or "USDT" in token_a_name or "DAI" in token_a_name:
+                    profit_usd = profit_wei / (10 ** decimals_a)
+                else:
+                    profit_usd = (profit_wei / 1e18) * 2500
+
+                flash_fee_usd = self._flash_loan_fee(amount_in / (10 ** decimals_a) if decimals_a != 18 else (amount_in / 1e18) * 2500)
+                gas_usd = self._estimate_gas_usd(chain_id, 450_000)  # Cross-DEX uses more gas
+                net = profit_usd - flash_fee_usd - gas_usd
+
+                if net >= min_profit:
+                    opp = ArbOpportunity(
+                        chain_id=chain_id,
+                        path=[token_a, token_b, token_a],
+                        dex_route=[buy_dex, sell_dex],
+                        input_amount=amount_in,
+                        expected_output=reverse_out,
+                        profit_wei=profit_wei,
+                        profit_usd=profit_usd,
+                        gas_cost_usd=gas_usd,
+                        net_profit_usd=net,
+                        flash_loan_fee_usd=flash_fee_usd,
+                        timestamp=int(time.time()),
+                        block_number=block,
+                    )
+                    opps.append(opp)
+                    self.stats["opportunities_found"] += 1
+                    self.stats["total_profit_usd"] += net
+                    logger.warning(
+                        f"💰 CROSS-DEX: {token_a_name}→{token_b_name}→{token_a_name} "
+                        f"buy@{buy_dex} sell@{sell_dex} "
+                        f"net=${net:.2f} chain={chain_id}"
+                    )
 
         return opps
 
@@ -348,12 +541,19 @@ class DexArbScanner:
         else:
             profit_usd = profit_wei / (10 ** dec_a)
 
-        flash_fee_usd = profit_usd * 0.0005  # tiny
-        chain_cfg = self.config.get_chain(chain_id)
-        gas_usd = 8.0 if not chain_cfg or not chain_cfg.is_l2 else 0.15
+        flash_fee_usd = self._flash_loan_fee(profit_usd)
+        gas_usd = self._estimate_gas_usd(chain_id, 500_000)  # Triangular uses 3 hops
         net = profit_usd - flash_fee_usd - gas_usd
 
-        if net < self.min_profit_usd:
+        # Use L2-specific threshold
+        min_profit = self.min_profit_usd_l2 if chain_id in self._l2_chains else self.min_profit_usd
+
+        if net < min_profit:
+            if net > 0:
+                logger.debug(
+                    f"Near-miss triangle: {name_a}->{name_b}->{name_c} "
+                    f"net=${net:.2f} < min ${min_profit:.2f} chain={chain_id}"
+                )
             return None
 
         self.stats["opportunities_found"] += 1
@@ -433,5 +633,6 @@ class DexArbScanner:
         return {
             **self.stats,
             "uptime_seconds": time.time() - self.stats["start_time"],
-            "chains_active": len(self.quoters),
+            "chains_v3": len(self.quoters),
+            "chains_v2": len(self.v2_routers),
         }

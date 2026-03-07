@@ -38,5 +38,12 @@ targets.json
 quick_scan_results.json
 .deploy_pid
 
+# Deprecated / dead code archive
+_deprecated/
+
+# ML model artifacts
+models/
+*.pkl
+
 # Pytest cache
 .pytest_cache/

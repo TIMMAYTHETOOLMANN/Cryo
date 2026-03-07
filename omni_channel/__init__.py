@@ -1,79 +1,28 @@
+#!/usr/bin/env python3
 """
-Omni-Channel Opportunity Triangulation Engine
-Universal MEV & Opportunity Discovery System
+omni_channel — REDIRECT STUB
+==============================
+This package has been consolidated into MODULE_1_LIQUIDATION_ENGINE.detectors.
 
-This module transforms your liquidation engine from a reactive scanner
-into a predictive, multi-vector opportunity discovery system.
+All imports from ``omni_channel.*`` are transparently redirected to
+``MODULE_1_LIQUIDATION_ENGINE.detectors.*`` so existing code continues to work.
+
+CANONICAL LOCATION:  MODULE_1_LIQUIDATION_ENGINE/detectors/
 """
+import warnings
 
-__version__ = "1.0.0"
-__author__ = "Cryo1 Team"
-
-from .data_lake import (
-    OpportunitySignal,
-    SignalType,
-    ExecutionModule,
-    SignalSource,
-    ChainId,
-    SignalQueue,
-    SignalRouter,
-    SignalStore,
-    KafkaDataLake,
-    KafkaConfig,
-    KafkaTopic,
+warnings.warn(
+    "omni_channel has been consolidated into MODULE_1_LIQUIDATION_ENGINE.detectors. "
+    "Update imports to use MODULE_1_LIQUIDATION_ENGINE.detectors.*",
+    DeprecationWarning,
+    stacklevel=2,
 )
 
-from .mempool_radar import (
-    MempoolRadar,
-    BloXrouteProvider,
-    InfuraProvider,
-    BlocknativeProvider,
-    AdvancedFilter,
-    ProviderConfig,
-)
+# ── Redirect: repoint this package's __path__ to the canonical location ──
+# This makes `from omni_channel.X import Y` resolve to
+# `MODULE_1_LIQUIDATION_ENGINE/detectors/X/` transparently.
+import MODULE_1_LIQUIDATION_ENGINE.detectors as _canonical
+__path__ = _canonical.__path__
 
-__all__ = [
-    # Version
-    '__version__',
-    '__author__',
-    
-    # Data models
-    'OpportunitySignal',
-    'SignalType',
-    'ExecutionModule',
-    'SignalSource',
-    'ChainId',
-    
-    # Queue management
-    'SignalQueue',
-    'SignalRouter',
-    'SignalStore',
-    
-    # Kafka
-    'KafkaDataLake',
-    'KafkaConfig',
-    'KafkaTopic',
-    
-    # Mempool Radar
-    'MempoolRadar',
-    'BloXrouteProvider',
-    'InfuraProvider',
-    'BlocknativeProvider',
-    'AdvancedFilter',
-    'ProviderConfig',
-]
-
-
-# Convenience function to create a complete system
-def create_omni_channel(config: dict = None):
-    """
-    Create and configure complete Omni-Channel system
-    
-    Args:
-        config: Configuration dictionary with API keys and settings
-    
-    Returns:
-        OmniOrchestrator instance
-    """
-    from .omni_orchestrator import OmniOrchestrator
-    return OmniOrchestrator(config or {})
+# Re-export top-level symbols
+from MODULE_1_LIQUIDATION_ENGINE.detectors import *  # noqa: F401,F403

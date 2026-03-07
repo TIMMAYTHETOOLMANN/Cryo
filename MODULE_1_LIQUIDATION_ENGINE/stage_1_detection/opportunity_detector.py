@@ -18,12 +18,14 @@ import heapq
 import json
 import logging
 import math
+import os
 import time
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
+from eth_abi import decode as abi_decode
 from web3 import Web3
 
 try:
@@ -35,6 +37,14 @@ except ImportError:
         poa_middleware = None
 
 from ..config.settings import ConfigManager, get_config
+
+# Subgraph indexer for mass borrower discovery
+try:
+    from .subgraph_indexer import SubgraphIndexer, LiquidationCandidate
+    SUBGRAPH_AVAILABLE = True
+except ImportError:
+    SubgraphIndexer = None  # type: ignore
+    SUBGRAPH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -122,9 +132,33 @@ COMPOUND_LIQUIDITY_ABI = json.loads('''[
      ],"stateMutability":"view","type":"function"}
 ]''')
 
-CHAINLINK_ANSWER_UPDATED_TOPIC = Web3.keccak(
+CHAINLINK_ANSWER_UPDATED_TOPIC = "0x" + Web3.keccak(
     text="AnswerUpdated(int256,uint256,uint256)"
 ).hex()
+
+# Chainlink ETH/USD oracle on Ethereum mainnet — for live price
+CHAINLINK_ETH_USD_FEED = "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419"
+CHAINLINK_PRICE_ABI = json.loads('''[
+    {"inputs":[],"name":"latestAnswer",
+     "outputs":[{"name":"","type":"int256"}],
+     "stateMutability":"view","type":"function"}
+]''')
+
+# Multicall3 (deployed at same address on all major EVM chains)
+MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11"
+MULTICALL3_ABI = json.loads('''[{
+    "inputs": [{"components": [
+        {"name": "target", "type": "address"},
+        {"name": "allowFailure", "type": "bool"},
+        {"name": "callData", "type": "bytes"}
+    ], "name": "calls", "type": "tuple[]"}],
+    "name": "aggregate3",
+    "outputs": [{"components": [
+        {"name": "success", "type": "bool"},
+        {"name": "returnData", "type": "bytes"}
+    ], "name": "returnData", "type": "tuple[]"}],
+    "stateMutability": "view", "type": "function"
+}]''')
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +247,9 @@ class OpportunityDetector:
         self.w3_providers: Dict[int, Web3] = {}
         self.tracked_users: Set[str] = set()
 
+        # ── Per-chain user tracking — only check users on their home chain ──
+        self._chain_users: Dict[int, Set[str]] = defaultdict(set)
+
         # Priority queue — positions sorted by urgency
         self._priority_queue: List[PrioritizedPosition] = []
 
@@ -240,8 +277,24 @@ class OpportunityDetector:
         self.min_debt_usd = exec_cfg.min_debt_usd
         self.scan_interval = exec_cfg.scan_interval_seconds
         self.probability_threshold = float(
-            __import__("os").getenv("PROBABILITY_THRESHOLD", "0.40")
+            os.getenv("PROBABILITY_THRESHOLD", "0.40")
         )
+
+        # ── Live ETH price (updated from on-chain oracle every scan cycle) ──
+        self._eth_price_usd: float = float(os.getenv("ETH_PRICE_USD", "2000"))
+        self._eth_price_updated: float = 0.0
+
+        # ── Multicall batch size ──
+        # L2s can handle larger batches; L1 uses smaller for gas reasons
+        self._multicall_batch_l1: int = int(os.getenv("MULTICALL_BATCH_L1", "80"))
+        self._multicall_batch_l2: int = int(os.getenv("MULTICALL_BATCH_L2", "250"))
+
+        # ── Subgraph indexer for mass borrower discovery ──
+        # NOTE: The Graph hosted service is deprecated. Set long interval
+        # until migrated to decentralized gateway (gateway.thegraph.com).
+        self._subgraph: Optional["SubgraphIndexer"] = None
+        self._subgraph_last_scan: float = 0.0
+        self._subgraph_interval: float = float(os.getenv("SUBGRAPH_SCAN_INTERVAL", "3600"))
 
         # Stats
         self.stats = {
@@ -251,6 +304,8 @@ class OpportunityDetector:
             "cross_protocol_flags": 0,
             "priority_critical": 0,
             "priority_high": 0,
+            "subgraph_users_discovered": 0,
+            "multicall_batches": 0,
             "start_time": time.time(),
         }
 
@@ -259,7 +314,8 @@ class OpportunityDetector:
     # ------------------------------------------------------------------
 
     async def initialize(self):
-        """Connect to all configured chains (read-only) and bootstrap user list."""
+        """Connect to all configured chains (read-only), bootstrap user list,
+        and initialize SubgraphIndexer for mass borrower discovery."""
         for chain_id, chain_cfg in self.config.get_all_chains().items():
             if not chain_cfg.rpc_url:
                 continue
@@ -271,17 +327,70 @@ class OpportunityDetector:
                     w3.middleware_onion.inject(poa_middleware, layer=0)
                 block = w3.eth.block_number
                 self.w3_providers[chain_id] = w3
-                logger.info(f"✅ Chain {chain_id} ({chain_cfg.name}) — block {block}")
+                logger.info(f"  Chain {chain_id} ({chain_cfg.name}) -- block {block}")
             except Exception as e:
-                logger.warning(f"❌ Chain {chain_id} ({chain_cfg.name}): {e}")
+                logger.warning(f"  Chain {chain_id} ({chain_cfg.name}): {e}")
 
-        # Bootstrap: discover active borrowers from recent Aave events
+        # Fetch live ETH price from Chainlink oracle
+        await self._refresh_eth_price()
+
+        # Bootstrap: discover active borrowers from recent events + subgraph
         await self._bootstrap_tracked_users()
 
+        # Initialize SubgraphIndexer for continuous mass discovery
+        if SUBGRAPH_AVAILABLE:
+            try:
+                self._subgraph = SubgraphIndexer({
+                    "hf_threshold": self.PREEMPTIVE_HF_THRESHOLD,
+                    "min_debt_usd": self.min_debt_usd,
+                    "eth_price_usd": self._eth_price_usd,
+                    "enabled_chains": list(self.w3_providers.keys()),
+                })
+                await self._subgraph.initialize()
+                # Do an initial subgraph scan to seed the watchlist
+                candidates = await self._subgraph.full_scan()
+                new_from_subgraph = 0
+                for c in candidates:
+                    addr = Web3.to_checksum_address(c.user_address)
+                    if addr not in self.tracked_users:
+                        self.tracked_users.add(addr)
+                        self._chain_users[c.chain_id].add(addr)
+                        new_from_subgraph += 1
+                self.stats["subgraph_users_discovered"] += new_from_subgraph
+                if new_from_subgraph:
+                    logger.info(
+                        f"  Subgraph: +{new_from_subgraph} at-risk borrowers "
+                        f"(total: {len(self.tracked_users)})"
+                    )
+            except Exception as e:
+                logger.warning(f"  SubgraphIndexer init failed (log-only mode): {e}")
+                self._subgraph = None
+
         logger.info(
-            f"Enhanced Detector ready — {len(self.w3_providers)} chains, "
+            f"Enhanced Detector ready -- {len(self.w3_providers)} chains, "
+            f"{len(self.tracked_users)} users tracked, "
+            f"ETH=${self._eth_price_usd:,.0f}, "
             f"ML scoring enabled, preemptive threshold HF<{self.PREEMPTIVE_HF_THRESHOLD}"
         )
+
+    async def _refresh_eth_price(self):
+        """Fetch live ETH/USD price from Chainlink on Ethereum mainnet."""
+        w3 = self.w3_providers.get(1)
+        if not w3:
+            return
+        try:
+            feed = w3.eth.contract(
+                address=Web3.to_checksum_address(CHAINLINK_ETH_USD_FEED),
+                abi=CHAINLINK_PRICE_ABI,
+            )
+            answer = feed.functions.latestAnswer().call()
+            price = answer / 1e8  # Chainlink uses 8 decimals
+            if price > 100:  # sanity check
+                self._eth_price_usd = price
+                self._eth_price_updated = time.time()
+                logger.debug(f"ETH/USD price updated: ${price:,.2f}")
+        except Exception as e:
+            logger.debug(f"ETH price fetch failed (using ${self._eth_price_usd:,.0f}): {e}")
 
     async def _bootstrap_tracked_users(self):
         """
@@ -289,7 +398,7 @@ class OpportunityDetector:
         and Compound V3 WithdrawCollateral events. Seeds the tracked_users set.
         """
         # Aave V3 Borrow event topic
-        BORROW_TOPIC = Web3.keccak(
+        BORROW_TOPIC = "0x" + Web3.keccak(
             text="Borrow(address,address,address,uint256,uint8,uint256,uint16)"
         ).hex()
 
@@ -297,12 +406,12 @@ class OpportunityDetector:
         # WithdrawReserves / Supply events. We look for Withdraw (borrowing)
         # Compound V3 Comet.withdraw(address asset, uint amount) emits:
         # Withdraw(address indexed src, address indexed to, uint amount)
-        COMPOUND_WITHDRAW_TOPIC = Web3.keccak(
+        COMPOUND_WITHDRAW_TOPIC = "0x" + Web3.keccak(
             text="Withdraw(address,address,uint256)"
         ).hex()
 
         # Compound V3 AbsorbCollateral for finding users that got liquidated
-        COMPOUND_ABSORB_TOPIC = Web3.keccak(
+        COMPOUND_ABSORB_TOPIC = "0x" + Web3.keccak(
             text="AbsorbCollateral(address,address,address,uint256,uint256)"
         ).hex()
 
@@ -316,8 +425,8 @@ class OpportunityDetector:
                 continue
 
             is_l2 = chain_id in (10, 8453, 42161, 137, 43114, 56, 324)
-            # L2s have faster blocks — look back further
-            lookback = 10000 if is_l2 else 2000
+            # L2s have faster blocks — look back further for more borrowers
+            lookback = 50000 if is_l2 else 10000
 
             try:
                 current_block = w3.eth.block_number
@@ -373,6 +482,7 @@ class OpportunityDetector:
 
                 for u in users_found:
                     self.tracked_users.add(u)
+                    self._chain_users[chain_id].add(u)
                 total_new += len(users_found)
 
                 if users_found:
@@ -397,22 +507,54 @@ class OpportunityDetector:
         """
         Run one scan cycle.  Returns positions sorted by priority
         (critical first).
+
+        Optimizations (v2):
+          - Parallel chain scanning via asyncio.gather
+          - Multicall3 batching for health factor checks (80-250 calls per batch)
+          - Periodic SubgraphIndexer refresh for mass borrower discovery
+          - Live ETH price from Chainlink oracle
         """
         self._priority_queue.clear()
 
-        for chain_id, w3 in self.w3_providers.items():
+        # Refresh ETH price every 60 seconds
+        if time.time() - self._eth_price_updated > 60:
+            await self._refresh_eth_price()
+
+        # Periodic subgraph scan for new at-risk borrowers (every N seconds)
+        if self._subgraph and (time.time() - self._subgraph_last_scan > self._subgraph_interval):
             try:
-                await self._scan_chain(chain_id, w3)
+                candidates = await self._subgraph.full_scan()
+                new_count = 0
+                for c in candidates:
+                    addr = Web3.to_checksum_address(c.user_address)
+                    if addr not in self.tracked_users:
+                        self.tracked_users.add(addr)
+                        self._chain_users[c.chain_id].add(addr)
+                        new_count += 1
+                if new_count:
+                    self.stats["subgraph_users_discovered"] += new_count
+                    logger.info(f"  Subgraph refresh: +{new_count} users (total: {len(self.tracked_users)})")
+                self._subgraph_last_scan = time.time()
             except Exception as e:
-                logger.error(f"Scan error chain {chain_id}: {e}")
+                logger.debug(f"Subgraph refresh error: {e}")
+
+        # Parallel scan all chains
+        tasks = []
+        for chain_id, w3 in self.w3_providers.items():
+            tasks.append(self._scan_chain(chain_id, w3))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, Exception):
+                logger.debug(f"Chain scan error: {r}")
 
         # Drain priority queue into sorted list
-        results: List[LiquidatablePosition] = []
+        results_list: List[LiquidatablePosition] = []
         while self._priority_queue:
             pp = heapq.heappop(self._priority_queue)
-            results.append(pp.position)
+            results_list.append(pp.position)
 
-        return results
+        return results_list
 
     async def _scan_chain(self, chain_id: int, w3: Web3):
         """Scan all protocols on a single chain, score, and enqueue."""
@@ -437,10 +579,10 @@ class OpportunityDetector:
 
     async def _discover_new_borrowers(self, chain_id, w3, protocols, lookback=50):
         """Lightweight rolling discovery: scan recent blocks for new Borrow/Withdraw events."""
-        BORROW_TOPIC = Web3.keccak(
+        BORROW_TOPIC = "0x" + Web3.keccak(
             text="Borrow(address,address,address,uint256,uint8,uint256,uint16)"
         ).hex()
-        COMPOUND_WITHDRAW_TOPIC = Web3.keccak(
+        COMPOUND_WITHDRAW_TOPIC = "0x" + Web3.keccak(
             text="Withdraw(address,address,uint256)"
         ).hex()
         before = len(self.tracked_users)
@@ -463,7 +605,9 @@ class OpportunityDetector:
                     for log in logs:
                         if len(log["topics"]) >= 3:
                             borrower = "0x" + log["topics"][2].hex()[-40:]
-                            self.tracked_users.add(Web3.to_checksum_address(borrower))
+                            addr = Web3.to_checksum_address(borrower)
+                            self.tracked_users.add(addr)
+                            self._chain_users[chain_id].add(addr)
 
                 elif "compound" in proto.name.lower():
                     logs = w3.eth.get_logs({
@@ -475,7 +619,9 @@ class OpportunityDetector:
                     for log in logs:
                         if len(log["topics"]) >= 2:
                             borrower = "0x" + log["topics"][1].hex()[-40:]
-                            self.tracked_users.add(Web3.to_checksum_address(borrower))
+                            addr = Web3.to_checksum_address(borrower)
+                            self.tracked_users.add(addr)
+                            self._chain_users[chain_id].add(addr)
             except Exception:
                 pass
 
@@ -488,21 +634,98 @@ class OpportunityDetector:
     # ------------------------------------------------------------------
 
     async def _check_aave_positions(self, w3, chain_id, proto):
-        contract = w3.eth.contract(
-            address=Web3.to_checksum_address(proto.pool_address),
-            abi=AAVE_HEALTH_FACTOR_ABI,
-        )
+        """Check Aave positions via Multicall3 batching (falls back to sequential)."""
+        pool_addr = Web3.to_checksum_address(proto.pool_address)
+        contract = w3.eth.contract(address=pool_addr, abi=AAVE_HEALTH_FACTOR_ABI)
 
-        for user in list(self.tracked_users)[:500]:
+        # Only check users discovered on THIS chain — not the global set
+        chain_specific = self._chain_users.get(chain_id, set())
+        users = list(chain_specific)[:2000]
+        if not users:
+            return
+
+        eth_price = self._eth_price_usd
+
+        # ── Multicall3 batched health factor check ──
+        is_l2 = chain_id in (10, 8453, 42161, 137, 43114, 56, 324)
+        batch_size = self._multicall_batch_l2 if is_l2 else self._multicall_batch_l1
+        mc_addr = MULTICALL3_ADDRESS
+        if chain_id == 324:
+            mc_addr = "0xF9cda624FBC7e059355ce98a31693d299FACd963"
+
+        results_map: Dict[str, tuple] = {}
+
+        try:
+            mc = w3.eth.contract(
+                address=Web3.to_checksum_address(mc_addr),
+                abi=MULTICALL3_ABI,
+            )
+            # Build all calldata
+            calls_and_addrs = []
+            for user in users:
+                try:
+                    calldata = contract.encode_abi('getUserAccountData',
+                        args=[Web3.to_checksum_address(user)])
+                    cd_hex = calldata if isinstance(calldata, str) else calldata.hex()
+                    if cd_hex.startswith('0x'):
+                        cd_hex = cd_hex[2:]
+                    calls_and_addrs.append((
+                        (pool_addr, True, bytes.fromhex(cd_hex)),
+                        user,
+                    ))
+                except Exception:
+                    continue
+
+            # Execute in batches
+            for batch_start in range(0, len(calls_and_addrs), batch_size):
+                batch = calls_and_addrs[batch_start:batch_start + batch_size]
+                batch_calls = [c for c, _ in batch]
+                batch_addrs = [a for _, a in batch]
+                self.stats["multicall_batches"] += 1
+                try:
+                    raw_results = mc.functions.aggregate3(batch_calls).call()
+                    for i, (success, return_data) in enumerate(raw_results):
+                        if success and len(return_data) >= 192:
+                            try:
+                                decoded = abi_decode(
+                                    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'],
+                                    return_data,
+                                )
+                                results_map[batch_addrs[i]] = decoded
+                            except Exception:
+                                pass
+                except Exception as batch_err:
+                    logger.debug(f"Multicall batch failed chain {chain_id}: {batch_err}")
+                    # Fall back to sequential for this batch
+                    for addr in batch_addrs:
+                        try:
+                            result = contract.functions.getUserAccountData(
+                                Web3.to_checksum_address(addr)
+                            ).call()
+                            results_map[addr] = result
+                        except Exception:
+                            continue
+
+        except Exception as mc_err:
+            logger.debug(f"Multicall3 unavailable chain {chain_id}: {mc_err}")
+            # Full sequential fallback
+            for user in users[:500]:
+                try:
+                    result = contract.functions.getUserAccountData(user).call()
+                    results_map[user] = result
+                except Exception:
+                    pass
+
+        # ── Process results ──
+        for user, result in results_map.items():
             try:
-                result = contract.functions.getUserAccountData(user).call()
                 hf = result[5] / 1e18
                 debt_eth = result[1] / 1e18
                 collateral_eth = result[0] / 1e18
                 self.stats["positions_scanned"] += 1
 
-                debt_usd = debt_eth * 2500
-                collateral_usd = collateral_eth * 2500
+                debt_usd = debt_eth * eth_price
+                collateral_usd = collateral_eth * eth_price
 
                 # Extended range: track up to PREEMPTIVE_HF_THRESHOLD
                 if hf > self.PREEMPTIVE_HF_THRESHOLD or debt_usd < self.min_debt_usd:
@@ -545,7 +768,8 @@ class OpportunityDetector:
                 # Profit estimate
                 gross = collateral_usd * proto.bonus
                 flash_fee = debt_usd * 0.0005
-                net_profit = gross - flash_fee - 5
+                gas_est = 5.0 if not (chain_id in (10, 8453, 42161, 137, 43114, 56, 324)) else 0.10
+                net_profit = gross - flash_fee - gas_est
 
                 if net_profit < self.config.execution.min_profit_usd and hf >= 1.0:
                     continue
@@ -584,10 +808,10 @@ class OpportunityDetector:
 
                 log_fn = logger.warning if priority.value <= 1 else logger.info
                 log_fn(
-                    f"{'⚠️' if priority.value <= 1 else '📍'} "
-                    f"{priority.name} {user[:12]}… HF={hf:.3f} "
+                    f"{'!!' if priority.value <= 1 else '>>'} "
+                    f"{priority.name} {user[:12]}... HF={hf:.3f} "
                     f"prob={probability:.0%} profit=${net_profit:.2f} "
-                    f"({proto.name} chain {chain_id})"
+                    f"debt=${debt_usd:,.0f} ({proto.name} chain {chain_id})"
                 )
 
             except Exception:
@@ -628,7 +852,8 @@ class OpportunityDetector:
             return
 
         scanned = 0
-        for user in list(self.tracked_users)[:500]:
+        chain_specific = self._chain_users.get(chain_id, set())
+        for user in list(chain_specific)[:500]:
             try:
                 # Quick check: does user have a borrow balance?
                 borrow_bal = comet.functions.borrowBalanceOf(user).call()
@@ -696,7 +921,7 @@ class OpportunityDetector:
                 )
 
                 logger.warning(
-                    f"⚠️ COMPOUND CRITICAL {user[:12]}... "
+                    f"!! COMPOUND CRITICAL {user[:12]}... "
                     f"debt=${debt_usd:,.0f} profit=${net_profit:.2f} "
                     f"(Compound V3 chain {chain_id})"
                 )

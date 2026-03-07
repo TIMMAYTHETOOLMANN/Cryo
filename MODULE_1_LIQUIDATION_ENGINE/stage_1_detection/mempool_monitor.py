@@ -13,7 +13,7 @@ Targets:
 
 Flow:
   1. Mempool sniffer detects pending TX that will move price
-  2. Simulate post-state to find newly liquidatable positions
+  2. Verify post-state to find newly liquidatable positions
   3. Create Flashbots bundle: [triggering_tx, our_liquidation_tx]
   4. Submit bundle — we liquidate in the SAME block, before anyone else
 

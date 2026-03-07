@@ -73,8 +73,8 @@ class BundleResult:
     success: bool
     bundle_hash: Optional[str] = None
     target_block: int = 0
-    simulation_success: bool = False
-    simulation_error: Optional[str] = None
+    preflight_success: bool = False
+    preflight_error: Optional[str] = None
     effective_gas_price: int = 0
     coinbase_diff: int = 0
     error_message: Optional[str] = None
@@ -107,7 +107,7 @@ class MEVProtection:
     1. Private transaction routing via Flashbots / bloXroute
     2. Bundle construction for backrunning oracle updates
     3. Gas bidding strategy to ensure bundle inclusion
-    4. Simulation before submission to avoid reverts
+    4. Preflight verification before submission to avoid reverts
     """
 
     # Flashbots relay endpoint
@@ -120,7 +120,7 @@ class MEVProtection:
     FLASHBOTS_BUILDER_URL = "https://builder0x69.io,https://rpc.beaverbuild.org,https://rsync-builder.xyz"
 
     # Chainlink AnswerUpdated event topic
-    ANSWER_UPDATED_TOPIC = Web3.keccak(
+    ANSWER_UPDATED_TOPIC = "0x" + Web3.keccak(
         text="AnswerUpdated(int256,uint256,uint256)"
     ).hex()
 
@@ -251,8 +251,8 @@ class MEVProtection:
         Submit a bundle to the Flashbots relay.
 
         Steps:
-          1. Simulate the bundle
-          2. If simulation passes, send to relay
+          1. Verify the bundle
+          2. If verification passes, send to relay
           3. Wait for target block to check inclusion
         """
         if not self._flashbots_signer:
@@ -261,9 +261,9 @@ class MEVProtection:
                 error_message="Flashbots signer not initialised",
             )
 
-        # -- Simulation --
-        sim_result = await self._simulate_bundle(bundle, w3)
-        if not sim_result.simulation_success:
+        # -- Preflight verification --
+        sim_result = await self._preflight_bundle(bundle, w3)
+        if not sim_result.preflight_success:
             self.stats["bundles_failed"] += 1
             return sim_result
 
@@ -299,7 +299,7 @@ class MEVProtection:
                 return BundleResult(
                     success=False,
                     target_block=bundle.target_block,
-                    simulation_success=True,
+                    preflight_success=True,
                     error_message=data["error"].get("message", str(data["error"])),
                 )
 
@@ -315,7 +315,7 @@ class MEVProtection:
                 success=True,
                 bundle_hash=bundle_hash,
                 target_block=bundle.target_block,
-                simulation_success=True,
+                preflight_success=True,
             )
 
         except Exception as e:
@@ -327,13 +327,13 @@ class MEVProtection:
             )
 
     # ------------------------------------------------------------------
-    # Bundle simulation
+    # Bundle preflight verification
     # ------------------------------------------------------------------
 
-    async def _simulate_bundle(
+    async def _preflight_bundle(
         self, bundle: FlashbotsBundle, w3: Web3
     ) -> BundleResult:
-        """Simulate a bundle on the Flashbots relay"""
+        """Verify a bundle via eth_callBundle on the Flashbots relay"""
         try:
             import aiohttp
 
@@ -370,8 +370,8 @@ class MEVProtection:
                 return BundleResult(
                     success=False,
                     target_block=bundle.target_block,
-                    simulation_success=False,
-                    simulation_error=str(data["error"]),
+                    preflight_success=False,
+                    preflight_error=str(data["error"]),
                 )
 
             result = data.get("result", {})
@@ -379,14 +379,14 @@ class MEVProtection:
             gas_price = int(result.get("gasFees", "0"), 16)
 
             logger.info(
-                f"✅ Bundle simulation passed — "
+                f"✅ Bundle preflight verification passed — "
                 f"coinbaseDiff {coinbase_diff / 1e18:.6f} ETH"
             )
 
             return BundleResult(
                 success=True,
                 target_block=bundle.target_block,
-                simulation_success=True,
+                preflight_success=True,
                 effective_gas_price=gas_price,
                 coinbase_diff=coinbase_diff,
             )
@@ -395,8 +395,8 @@ class MEVProtection:
             return BundleResult(
                 success=False,
                 target_block=bundle.target_block,
-                simulation_success=False,
-                simulation_error=str(e),
+                preflight_success=False,
+                preflight_error=str(e),
             )
 
     # ------------------------------------------------------------------

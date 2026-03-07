@@ -31,6 +31,8 @@ class PlanStep:
     dependencies: List[int] = field(default_factory=list)
     parallel_group: Optional[str] = None
     allow_failure: bool = False
+    # Address resolution provenance
+    address_source: str = ""     # "resolver", "operation", "none"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -45,6 +47,7 @@ class PlanStep:
             "dependencies": self.dependencies,
             "parallel_group": self.parallel_group,
             "allow_failure": self.allow_failure,
+            "address_source": self.address_source,
         }
 
 
@@ -80,17 +83,32 @@ class CompileError(Exception):
 class Compiler:
     """Compiles FIRE ASTs into executable Plans.
 
+    Dynamically resolves contract addresses at compile time via the
+    AddressResolver. The context dict should include 'chain_id' to
+    enable per-chain address resolution.
+
     Usage::
 
         registry = OperationRegistry()
-        registry.register_protocol_operations("aave_v3")
+        registry.register_protocol_operations("aave_v3", chain_id=1)
 
         compiler = Compiler(registry)
-        plan = compiler.compile(ast, context={"amountIn": 10})
+        plan = compiler.compile(ast, context={"chain_id": 1, "amountIn": 10})
     """
 
     def __init__(self, registry: OperationRegistry) -> None:
         self.registry = registry
+        self._resolver = None
+
+    def _get_resolver(self):
+        """Lazy-load the address resolver."""
+        if self._resolver is None:
+            try:
+                from fire_engine.address_resolver import get_resolver
+                self._resolver = get_resolver()
+            except ImportError:
+                pass
+        return self._resolver
 
     def compile(self, ast: ASTNode, context: Optional[Dict[str, Any]] = None) -> Plan:
         """Compile an AST into an execution Plan.
@@ -168,7 +186,13 @@ class Compiler:
             pass  # Literals are values, not actions
 
     def _emit_atomic(self, node: ASTNode, ctx: Dict[str, Any], plan: Plan) -> None:
-        """Emit a plan step for an atomic operation."""
+        """Emit a plan step for an atomic operation.
+
+        Resolves contract addresses dynamically:
+          1. If operation has a resolver_key, resolve via AddressResolver
+          2. Fall back to operation.contract_address (set at registration)
+          3. Leave None if unresolvable (validation will catch it)
+        """
         op_name = node.value
         if op_name is None:
             raise CompileError("Atomic operation has no name")
@@ -184,15 +208,37 @@ class Compiler:
         # Look up operation in registry (try exact match, then protocol-prefixed)
         op = self.registry.get(op_name)
         if op is None:
-            # Try common protocol prefixes
-            for prefix in ("aave_v3_", "uniswap_v2_", "compound_v2_"):
+            for prefix in ("aave_v3_", "uniswap_v2_", "uniswap_v3_",
+                           "compound_v2_", "balancer_v2_", "maker_"):
                 op = self.registry.get(f"{prefix}{op_name}")
                 if op:
                     break
 
-        gas = op.gas_estimate if op else 100_000  # default gas estimate
-        contract = op.contract_address if op else None
+        gas = op.gas_estimate if op else 100_000
         op_id = op.id if op else op_name
+
+        # Dynamic address resolution
+        contract = None
+        address_source = "none"
+        chain_id = ctx.get("chain_id", 1)
+
+        if op and op.resolver_key:
+            resolver = self._get_resolver()
+            if resolver:
+                try:
+                    resolved_addr = resolver.resolve(op.resolver_key, chain_id)
+                    contract = resolved_addr.address
+                    address_source = f"resolver:{resolved_addr.source}"
+                except Exception:
+                    # Fall back to operation's stored address
+                    contract = op.contract_address
+                    address_source = "operation" if contract else "none"
+            else:
+                contract = op.contract_address
+                address_source = "operation" if contract else "none"
+        elif op:
+            contract = op.contract_address
+            address_source = "operation" if contract else "none"
 
         step = PlanStep(
             index=len(plan.steps),
@@ -201,6 +247,7 @@ class Compiler:
             resolved_params=resolved,
             target_contract=contract,
             gas_estimate=gas,
+            address_source=address_source,
         )
         plan.steps.append(step)
 

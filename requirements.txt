@@ -35,6 +35,8 @@ kafka-python>=2.0.2   # Apache Kafka client
 # ============================================================================
 scikit-learn>=1.3.0   # ML models for quality scoring
 joblib>=1.3.0         # Model serialization
+scipy>=1.11.0         # Bayesian A/B testing & statistical analysis
+xgboost>=2.0.0        # Advanced gradient boosting (optional, for scoring)
 
 # ============================================================================
 # MONITORING & LOGGING
@@ -53,10 +55,16 @@ pytest-cov>=4.1.0     # Coverage reporting
 # TYPE CHECKING (Development)
 # ============================================================================
 mypy>=1.7.0           # Static type checking
-types-aiohttp         # Type stubs for aiohttp
+# types-aiohttp       # Type stubs for aiohttp (deprecated, aiohttp ships its own types now)
 
 # ============================================================================
 # UTILITY
 # ============================================================================
 pycryptodome>=3.19.0  # Cryptographic operations
 requests>=2.31.0      # HTTP library (sync fallback)
+
+# ============================================================================
+# OMNI-SCOPE v2 DATA LAKE
+# ============================================================================
+asyncpg>=0.29.0       # Async PostgreSQL / TimescaleDB driver
+neo4j>=5.15.0         # Neo4j graph database driver

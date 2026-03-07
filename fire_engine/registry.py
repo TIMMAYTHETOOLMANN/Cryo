@@ -5,16 +5,24 @@
 #  gas cost model, and execution logic (contract address + ABI).
 #  The registry is populated by scanning protocol ABIs and mapping public
 #  functions to atomic operations based on the FIRE framework axioms.
+#
+#  Contract addresses are resolved DYNAMICALLY via AddressResolver:
+#    - Never stores stale addresses
+#    - Resolves at registration time per-chain from env/config/canonical
+#    - Re-resolves at compile time for live execution
 # =============================================================================
 
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class ParameterType(str, Enum):
@@ -63,17 +71,33 @@ class Operation:
     abi: Optional[Dict[str, Any]] = None
     network: str = "ethereum"
     protocol: str = ""
+    # Dynamic address resolution key (e.g. "aave_v3_pool") — used by
+    # AddressResolver to look up the real contract address per chain at runtime.
+    # If set, contract_address is resolved dynamically and never stale.
+    resolver_key: Optional[str] = None
     # For composite operations, stores the sub-operation IDs
     sub_operations: List[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
     def encode(self, params: Dict[str, Any]) -> Optional[bytes]:
-        """Encode calldata for this operation (placeholder for web3 encoding)."""
-        if not self.function_signature:
+        """Encode calldata for this operation via web3 ABI encoding."""
+        if not self.function_signature or not self.abi:
             return None
-        # In production, use web3.eth.contract().encodeABI()
-        return None
+        try:
+            from web3 import Web3
+            w3 = Web3()
+            contract = w3.eth.contract(
+                address=Web3.to_checksum_address(self.contract_address or "0x" + "0" * 40),
+                abi=[self.abi] if isinstance(self.abi, dict) else self.abi,
+            )
+            fn_name = self.function_signature.split("(")[0]
+            fn = contract.functions[fn_name]
+            ordered_args = [params[p.name] for p in self.parameters if p.name in params]
+            return fn(*ordered_args).build_transaction({"gas": 0})["data"]
+        except Exception as exc:
+            logger.debug("ABI encode failed for %s: %s", self.id, exc)
+            return None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize operation to dictionary."""
@@ -165,14 +189,37 @@ class OperationRegistry:
 
     # ── Bulk Registration Helpers ───────────────────────────────────────────
 
-    def register_protocol_operations(self, protocol: str, network: str = "ethereum") -> int:
+    def register_protocol_operations(self, protocol: str, network: str = "ethereum",
+                                      chain_id: int = 1) -> int:
         """Register standard DeFi operations for a known protocol.
 
+        Resolves contract addresses dynamically via AddressResolver.
         Returns the number of operations registered.
         """
+        # Lazily import to avoid circular dependency
+        from fire_engine.address_resolver import get_resolver, AddressNotFound
+
+        resolver = get_resolver()
         count = 0
         definitions = _PROTOCOL_OPERATIONS.get(protocol, [])
         for op_def in definitions:
+            # Dynamic address resolution
+            resolver_key = op_def.get("resolver_key")
+            contract_addr = None
+            if resolver_key:
+                try:
+                    resolved = resolver.resolve(resolver_key, chain_id)
+                    contract_addr = resolved.address
+                    logger.debug(
+                        "Resolved %s on chain %d → %s (source: %s)",
+                        resolver_key, chain_id, contract_addr[:12], resolved.source,
+                    )
+                except AddressNotFound:
+                    logger.debug(
+                        "No address for %s on chain %d — operation registered without contract",
+                        resolver_key, chain_id,
+                    )
+
             op = Operation(
                 id=f"{protocol}_{op_def['name']}",
                 name=op_def["name"],
@@ -190,7 +237,9 @@ class OperationRegistry:
                     for e in op_def.get("effects", [])
                 ],
                 gas_estimate=op_def.get("gas_estimate", 0),
+                contract_address=contract_addr,
                 function_signature=op_def.get("function_signature"),
+                resolver_key=resolver_key,
                 network=network,
                 protocol=protocol,
             )
@@ -218,6 +267,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "flash_loan",
             "description": "Aave V3 flash loan",
             "function_signature": "flashLoanSimple(address,address,uint256,bytes,uint16)",
+            "resolver_key": "aave_v3_pool",
             "parameters": [
                 {"name": "receiver", "type": "address"},
                 {"name": "asset", "type": "address"},
@@ -230,6 +280,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "supply",
             "description": "Supply asset to Aave V3",
             "function_signature": "supply(address,uint256,address,uint16)",
+            "resolver_key": "aave_v3_pool",
             "parameters": [
                 {"name": "asset", "type": "address"},
                 {"name": "amount", "type": "uint256"},
@@ -242,6 +293,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "borrow",
             "description": "Borrow from Aave V3",
             "function_signature": "borrow(address,uint256,uint256,uint16,address)",
+            "resolver_key": "aave_v3_pool",
             "parameters": [
                 {"name": "asset", "type": "address"},
                 {"name": "amount", "type": "uint256"},
@@ -254,6 +306,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "liquidation_call",
             "description": "Liquidate undercollateralized position",
             "function_signature": "liquidationCall(address,address,address,uint256,bool)",
+            "resolver_key": "aave_v3_pool",
             "parameters": [
                 {"name": "collateral_asset", "type": "address"},
                 {"name": "debt_asset", "type": "address"},
@@ -272,6 +325,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "swap_exact_tokens_for_tokens",
             "description": "Swap exact amount of input tokens for output tokens",
             "function_signature": "swapExactTokensForTokens(uint256,uint256,address[],address,uint256)",
+            "resolver_key": "uniswap_v2_router",
             "parameters": [
                 {"name": "amount_in", "type": "uint256"},
                 {"name": "amount_out_min", "type": "uint256"},
@@ -285,6 +339,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "swap_tokens_for_exact_tokens",
             "description": "Swap tokens for exact output amount",
             "function_signature": "swapTokensForExactTokens(uint256,uint256,address[],address,uint256)",
+            "resolver_key": "uniswap_v2_router",
             "parameters": [
                 {"name": "amount_out", "type": "uint256"},
                 {"name": "amount_in_max", "type": "uint256"},
@@ -300,6 +355,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "supply",
             "description": "Supply asset to Compound V2 (mint cTokens)",
             "function_signature": "mint(uint256)",
+            "resolver_key": "compound_v2_comptroller",
             "parameters": [
                 {"name": "amount", "type": "uint256"},
             ],
@@ -310,6 +366,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "borrow",
             "description": "Borrow from Compound V2",
             "function_signature": "borrow(uint256)",
+            "resolver_key": "compound_v2_comptroller",
             "parameters": [
                 {"name": "amount", "type": "uint256"},
             ],
@@ -320,6 +377,7 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
             "name": "liquidate_borrow",
             "description": "Liquidate undercollateralized Compound V2 position",
             "function_signature": "liquidateBorrow(address,uint256,address)",
+            "resolver_key": "compound_v2_comptroller",
             "parameters": [
                 {"name": "borrower", "type": "address"},
                 {"name": "repay_amount", "type": "uint256"},
@@ -330,6 +388,53 @@ _PROTOCOL_OPERATIONS: Dict[str, List[Dict[str, Any]]] = {
                 {"effect_type": "transfer"},
             ],
             "gas_estimate": 350_000,
+        },
+    ],
+    "uniswap_v3": [
+        {
+            "name": "exact_input_single",
+            "description": "Swap exact input on Uniswap V3",
+            "function_signature": "exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))",
+            "resolver_key": "uniswap_v3_router",
+            "parameters": [
+                {"name": "token_in", "type": "address"},
+                {"name": "token_out", "type": "address"},
+                {"name": "fee", "type": "uint256"},
+                {"name": "amount_in", "type": "uint256"},
+                {"name": "amount_out_min", "type": "uint256"},
+            ],
+            "effects": [{"effect_type": "transfer"}],
+            "gas_estimate": 180_000,
+        },
+    ],
+    "balancer_v2": [
+        {
+            "name": "flash_loan",
+            "description": "Balancer V2 flash loan (0% fee)",
+            "function_signature": "flashLoan(address,address[],uint256[],bytes)",
+            "resolver_key": "balancer_v2_vault",
+            "parameters": [
+                {"name": "recipient", "type": "address"},
+                {"name": "tokens", "type": "bytes"},
+                {"name": "amounts", "type": "bytes"},
+            ],
+            "effects": [{"effect_type": "add_liability"}],
+            "gas_estimate": 200_000,
+        },
+    ],
+    "maker": [
+        {
+            "name": "flash_mint",
+            "description": "MakerDAO DAI flash mint (0% fee)",
+            "function_signature": "flashLoan(address,address,uint256,bytes)",
+            "resolver_key": "maker_flash",
+            "parameters": [
+                {"name": "receiver", "type": "address"},
+                {"name": "token", "type": "address"},
+                {"name": "amount", "type": "uint256"},
+            ],
+            "effects": [{"effect_type": "add_liability"}],
+            "gas_estimate": 200_000,
         },
     ],
 }

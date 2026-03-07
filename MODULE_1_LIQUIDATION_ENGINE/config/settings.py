@@ -74,23 +74,22 @@ class DatabaseConfig:
 @dataclass
 class ExecutionConfig:
     # Align class defaults with the env-var defaults so direct instantiation
-    # (e.g. in unit tests) produces the same conservative thresholds as a
+    # (e.g. in unit tests) produces the same aggressive thresholds as a
     # production run loaded from environment variables.
-    min_profit_usd: float = 50.0             # env: MIN_PROFIT_USD (default 50)
-    min_profit_wei: int = 10_000_000_000_000_000  # 0.01 ETH; env: MIN_PROFIT_WEI
-    gas_price_cap_gwei: float = 50.0
-    gas_limit_buffer: float = 1.2
+    min_profit_usd: float = 0.01             # env: MIN_PROFIT_USD (micro-profit)
+    min_profit_wei: int = 100_000_000_000_000  # 0.0001 ETH; env: MIN_PROFIT_WEI
+    gas_price_cap_gwei: float = 5.0           # env: GAS_PRICE_CAP_GWEI
+    gas_limit_buffer: float = 1.15
     max_gas_limit: int = 1_000_000
-    scan_interval_seconds: int = 3
+    scan_interval_seconds: float = 0.5
     health_factor_threshold: float = 1.05
-    min_debt_usd: float = 1_000.0            # env: MIN_DEBT_USD (default 1000)
+    min_debt_usd: float = 25.0               # env: MIN_DEBT_USD (capture small positions)
     transaction_timeout_seconds: int = 120
     # Maximum number of positions to push into the active watchlist (ranked by HF, lowest first)
-    max_watchlist_size: int = 500
-    # Safety gate — must be explicitly set to True (via EXECUTION_ENABLED=true) to
-    # submit live transactions.  When False, the executor logs the opportunity and
-    # returns without broadcasting, acting as a dry-run / scan-only mode.
-    execution_enabled: bool = False
+    max_watchlist_size: int = 5000
+    # Execution gate — ENABLED by default for full deployment.
+    # Set EXECUTION_ENABLED=false to revert to scan-only / dry-run mode.
+    execution_enabled: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +203,23 @@ class ConfigManager:
                 self._protocols[f"compound_v3_{cid}"] = ProtocolConfig(
                     "Compound V3", cid, addr, 0.80, 0.05, 0.0005)
 
+        # ── Spark Protocol (MakerDAO's lending arm) ──
+        # Same liquidation interface as Aave V3 (fork), 5% bonus
+        spark_pool = os.getenv("SPARK_POOL_ETHEREUM", "0xC13e21B648A5Ee794902342038FF3aDAB66BE987")
+        if spark_pool:
+            self._protocols["spark_1"] = ProtocolConfig(
+                "Spark", 1, spark_pool, 0.825, 0.05, 0.0)
+
+        # ── Radiant V2 (multi-chain lending, Aave V2 fork) ──
+        radiant_pools = {
+            42161: os.getenv("RADIANT_V2_POOL_ARBITRUM", "0xF4B1486DD74D07706052A33d31d7c0AAFD0659E1"),
+            56:    os.getenv("RADIANT_V2_POOL_BSC", "0xd50Cf00b6e600Dd036Ba8eF475677d816d6c4281"),
+        }
+        for cid, addr in radiant_pools.items():
+            if addr:
+                self._protocols[f"radiant_v2_{cid}"] = ProtocolConfig(
+                    "Radiant V2", cid, addr, 0.80, 0.10, 0.0009)  # 10% bonus!
+
     # ---- flash-loan providers ----
 
     def _init_flash_providers(self):
@@ -263,17 +279,17 @@ class ConfigManager:
     @property
     def execution(self) -> ExecutionConfig:
         return ExecutionConfig(
-            min_profit_usd=float(os.getenv("MIN_PROFIT_USD", "50")),
-            min_profit_wei=int(os.getenv("MIN_PROFIT_WEI", "10000000000000000")),
+            min_profit_usd=float(os.getenv("MIN_PROFIT_USD", "0.50")),
+            min_profit_wei=int(os.getenv("MIN_PROFIT_WEI", "100000000000000")),
             gas_price_cap_gwei=float(os.getenv("GAS_PRICE_CAP_GWEI", "50")),
-            gas_limit_buffer=float(os.getenv("GAS_LIMIT_BUFFER", "1.2")),
+            gas_limit_buffer=float(os.getenv("GAS_LIMIT_BUFFER", "1.15")),
             max_gas_limit=int(os.getenv("MAX_GAS_LIMIT", "1000000")),
-            scan_interval_seconds=int(os.getenv("SCAN_INTERVAL_SECONDS", "3")),
+            scan_interval_seconds=float(os.getenv("SCAN_INTERVAL_SECONDS", "0.5")),
             health_factor_threshold=float(os.getenv("HEALTH_FACTOR_THRESHOLD", "1.05")),
-            min_debt_usd=float(os.getenv("MIN_DEBT_USD", "1000")),
+            min_debt_usd=float(os.getenv("MIN_DEBT_USD", "100")),
             transaction_timeout_seconds=int(os.getenv("TRANSACTION_TIMEOUT_SECONDS", "120")),
-            max_watchlist_size=int(os.getenv("MAX_WATCHLIST_SIZE", "500")),
-            execution_enabled=os.getenv("EXECUTION_ENABLED", "false").lower() == "true",
+            max_watchlist_size=int(os.getenv("MAX_WATCHLIST_SIZE", "2000")),
+            execution_enabled=os.getenv("EXECUTION_ENABLED", "true").lower() == "true",
         )
 
     @property

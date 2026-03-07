@@ -69,19 +69,19 @@ class RLAction:
 @dataclass
 class ParameterSet:
     """Tunable parameters per chain."""
-    min_debt_usd: float = 100.0
-    gas_price_cap_gwei: float = 50.0
+    min_debt_usd: float = 50.0
+    gas_price_cap_gwei: float = 5.0
     slippage_tolerance: float = 0.005
-    min_profit_usd: float = 2.0
+    min_profit_usd: float = 0.10
     hf_threshold: float = 1.05
 
 
 # Parameter bounds (safety limits)
 PARAM_BOUNDS = {
-    "min_debt_usd":      (50.0, 50000.0),
-    "gas_price_cap_gwei": (5.0, 500.0),
+    "min_debt_usd":      (10.0, 50000.0),
+    "gas_price_cap_gwei": (1.0, 500.0),
     "slippage_tolerance": (0.001, 0.05),
-    "min_profit_usd":    (1.0, 500.0),
+    "min_profit_usd":    (0.01, 500.0),
     "hf_threshold":      (1.01, 1.20),
 }
 

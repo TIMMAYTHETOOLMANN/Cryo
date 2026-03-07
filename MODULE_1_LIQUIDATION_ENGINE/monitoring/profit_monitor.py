@@ -45,7 +45,7 @@ class ProfitMonitor:
         }
         self.treasury = cfg.treasury_address
         self.w3 = Web3(Web3.HTTPProvider(self.rpc_url)) if self.rpc_url else None
-        self.event_sig = self.w3.keccak(text=self.EVENT_SIG_TEXT).hex() if self.w3 else ""
+        self.event_sig = ("0x" + self.w3.keccak(text=self.EVENT_SIG_TEXT).hex()) if self.w3 else ""
 
         self.profits_found = 0
         self.profit_events: List[Dict] = []

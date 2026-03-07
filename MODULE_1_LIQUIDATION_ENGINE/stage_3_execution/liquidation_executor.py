@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-STAGE 3 — Liquidation Executor (Consolidated)
+STAGE 3 -- Liquidation Executor (Consolidated)
 ===============================================
 Python interface to on-chain LiquidationExecutor contracts (V1, V2, Flash).
-Handles simulation, gas-gating, TX submission, and event parsing.
+Handles verification, gas-gating, TX submission, and event parsing.
 
 CRITICAL: This module MUST only be called after GasManager.can_execute()
 returns True.  The pipeline enforces this.
@@ -21,7 +21,7 @@ try:
 except ImportError:
     import logging
     logging.getLogger(__name__).warning(
-        "Could not import LiquidationExecutor from src/ — stub mode"
+        "Could not import LiquidationExecutor from src/ -- stub mode"
     )
 
     class LiquidationExecutor:

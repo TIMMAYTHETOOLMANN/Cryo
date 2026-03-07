@@ -16,7 +16,7 @@ $0 Initial Capital → Exponential Profit:
   Stage 6  Profit Collection │ Treasury monitoring
   Stage 7  Analytics         │ A/B testing + RL parameter tuning + anomaly detection
   Module 9 Omni-Scope        │ 5 detector arrays + ML ranker (predictive intel)
-  Module 11 JIT Engine       │ Oracle-triggered, simulate-before-send, JIT execution
+  Module 11 JIT Engine       │ Oracle-triggered, verify-before-send, JIT execution
 """
 
 import asyncio
@@ -47,6 +47,7 @@ from .stage_3_execution.liquidation_executor import (
     LiquidationRequest,
     LiquidationResult,
 )
+from .stage_3_execution.dex_arb_executor import DexArbExecutor, ArbExecutionResult
 from .stage_5_cross_chain.orchestrator import CrossChainOrchestrator
 from .stage_6_profit_collection.treasury_manager import TreasuryManager
 from .stage_7_analytics.analytics_engine import AnalyticsEngine, ExecutionRecord
@@ -61,17 +62,17 @@ except ImportError:
     OmniScopeEngine = None  # type: ignore
     OMNI_SCOPE_AVAILABLE = False
 
-# Module 11 — JIT Liquidation Timing Optimizer
+# Module 11 — JIT Liquidation Timing Optimizer (canonical: MODULE_11_TIMING_ENGINE)
 try:
-    from profit_engine.jit_liquidation_engine import JITLiquidationEngine
+    from MODULE_11_TIMING_ENGINE import TimingOptimizerEngine as JITLiquidationEngine
     JIT_ENGINE_AVAILABLE = True
 except ImportError:
     JITLiquidationEngine = None  # type: ignore
     JIT_ENGINE_AVAILABLE = False
 
-# Zero-Revert Execution Pipeline (oracle reactor + block watcher + mempool sniffer)
+# Zero-Revert Execution Pipeline (consolidated into MODULE_1/profit_core)
 try:
-    from profit_engine.zero_revert_pipeline import ZeroRevertPipeline
+    from .profit_core.zero_revert_pipeline import ZeroRevertPipeline
     ZRP_AVAILABLE = True
 except ImportError:
     ZeroRevertPipeline = None  # type: ignore
@@ -128,6 +129,13 @@ class Pipeline:
         except Exception as e:
             logger.warning(f"LiquidationExecutor init failed (stub mode): {e}")
 
+        # DEX Arb Executor (flash-loan-funded atomic arb execution)
+        self.arb_executor: Optional[DexArbExecutor] = None
+        try:
+            self.arb_executor = DexArbExecutor(self.config)
+        except Exception as e:
+            logger.warning(f"DexArbExecutor init failed: {e}")
+
         # Script 4: Module 9 Omni-Scope
         self.omni_scope: Optional["OmniScopeEngine"] = None
         if OMNI_SCOPE_AVAILABLE:
@@ -173,6 +181,8 @@ class Pipeline:
             "cross_chain_arb_profit_usd": 0.0,
             "dex_arb_opportunities": 0,
             "dex_arb_profit_usd": 0.0,
+            "dex_arb_executions_attempted": 0,
+            "dex_arb_executions_succeeded": 0,
             "omni_bridge_signals": 0,
             "gas_gate_blocks": 0,
             "gas_abstraction_used": 0,
@@ -183,8 +193,8 @@ class Pipeline:
             "rl_episodes": 0,
             # Module 11: JIT execution stats
             "jit_positions_tracked": 0,
-            "jit_simulations_run": 0,
-            "jit_simulations_passed": 0,
+            "jit_preflight_checks": 0,
+            "jit_preflight_passed": 0,
             "jit_txs_broadcast": 0,
             "jit_txs_confirmed": 0,
             "jit_txs_reverted": 0,
@@ -226,10 +236,9 @@ class Pipeline:
         ``max_watchlist_size`` so only the most at-risk candidates are actively
         monitored.  This avoids RPC flooding while maximising liquidation coverage.
 
-        Note: ``debt_usd`` is estimated as ``debt_amount_wei / 1e18 * 2500`` — a
-        placeholder using a rough ETH price.  The JIT engine uses this value only
-        for initial profit-proximity scoring; it re-fetches actual prices via
-        on-chain oracles during active monitoring.
+        ``debt_usd`` is sourced from the position's on-chain debt valuation.
+        The JIT engine re-fetches actual prices via on-chain oracles during
+        active monitoring.
         """
         if not self.jit_engine:
             return
@@ -239,7 +248,7 @@ class Pipeline:
             pos.user: {
                 "chain_id": pos.chain_id,
                 "last_hf": pos.health_factor,
-                "debt_usd": pos.debt_amount / 1e18 * 2500,  # rough ETH price estimate
+                "debt_usd": getattr(pos, "debt_usd", 0.0),
                 "collateral_asset": pos.collateral_asset,
                 "debt_asset": pos.debt_asset,
                 "pool": getattr(pos, "pool_address", ""),
@@ -258,11 +267,12 @@ class Pipeline:
             return
         max_size = self.config.execution.max_watchlist_size
         candidates = sorted(positions, key=lambda p: p.health_factor)[:max_size]
+        eth_price = getattr(self.detector, '_eth_price_usd', 2000.0)
         watchlist = {
             pos.user: {
                 "chain_id": pos.chain_id,
                 "last_hf": pos.health_factor,
-                "debt_usd": pos.debt_amount / 1e18 * 2500,  # rough ETH price estimate
+                "debt_usd": pos.debt_amount / 1e18 * eth_price,
                 "collateral_asset": pos.collateral_asset,
                 "debt_asset": pos.debt_asset,
                 "pool": getattr(pos, "pool_address", ""),
@@ -270,6 +280,43 @@ class Pipeline:
             for pos in candidates
         }
         self.zero_revert_pipeline.feed_watchlist(watchlist)
+
+    def _sync_zrp_priority_queue(self) -> None:
+        """Feed the detector's priority queue into the ZRP.
+
+        The priority queue contains all positions scanned with HF < 1.50,
+        including those too far from liquidation to execute now.  The ZRP
+        monitors their oracle feeds and fires instantly when a price move
+        pushes HF below 1.0 — no more waiting for the next scan cycle.
+        """
+        if not self.zero_revert_pipeline:
+            return
+        pq = getattr(self.detector, '_priority_queue', [])
+        if not pq:
+            return
+
+        eth_price = getattr(self.detector, '_eth_price_usd', 2000.0)
+        max_size = self.config.execution.max_watchlist_size
+        watchlist = {}
+        for pp in pq[:max_size]:
+            pos = pp.position if hasattr(pp, 'position') else pp
+            user = getattr(pos, 'user', None) or getattr(pos, 'borrower', '')
+            if not user:
+                continue
+            chain_id = getattr(pos, 'chain_id', 1)
+            hf = getattr(pos, 'health_factor', 1.5)
+            debt_amt = getattr(pos, 'debt_amount', 0)
+            watchlist[user] = {
+                "chain_id": chain_id,
+                "last_hf": hf,
+                "debt_usd": debt_amt / 1e18 * eth_price if debt_amt else 0,
+                "collateral_asset": getattr(pos, 'collateral_asset', ''),
+                "debt_asset": getattr(pos, 'debt_asset', ''),
+                "pool": getattr(pos, 'pool_address', ''),
+            }
+
+        if watchlist:
+            self.zero_revert_pipeline.feed_watchlist(watchlist)
 
     # ------------------------------------------------------------------
     # Entry points
@@ -294,11 +341,14 @@ class Pipeline:
             logger.error("❌ Pre-flight FAILED — cannot proceed")
             return
 
-        # ── Initialize detector + NFT detector + DEX arb scanner ──
+        # ── Initialize detector + NFT detector + DEX arb scanner + arb executor ──
         logger.info("\n▸ STAGE 1: Initializing Enhanced Detector + NFT + DEX Arb Scanner…")
         await self.detector.initialize()
         await self.dex_arb.initialize()
         await self.omni_bridge.initialize()
+        if self.arb_executor:
+            await self.arb_executor.initialize()
+            logger.info("  ✅ DexArbExecutor ready (flash-loan-funded arb execution)")
 
         # ── Start mempool monitor (background) ──
         logger.info("▸ STAGE 1: Starting Mempool Monitor (background)…")
@@ -347,7 +397,7 @@ class Pipeline:
         if self.jit_engine:
             logger.info("\n▸ MODULE 11: Starting JIT Liquidation Timing Optimizer…")
             await self.jit_engine.start()
-            logger.info("  ✅ Oracle watcher + simulate-before-send + JIT executor active")
+            logger.info("  ✅ Oracle watcher + verify-before-send + JIT executor active")
         else:
             logger.info("\n▸ MODULE 11: JIT engine not available")
 
@@ -406,29 +456,40 @@ class Pipeline:
         if cycle % 6 == 1 or cycle <= 3:
             uptime = (time.time() - self.stats["start_time"]) / 60
             tracked = len(self.detector.tracked_users) if hasattr(self.detector, 'tracked_users') else '?'
+            eth_price = getattr(self.detector, '_eth_price_usd', 0)
+            mc_batches = self.detector.stats.get('multicall_batches', 0) if hasattr(self.detector, 'stats') else 0
             logger.info(
-                f"💓 Cycle {cycle} | {uptime:.1f}min | users={tracked} | "
+                f">> Cycle {cycle} | {uptime:.1f}min | users={tracked} | ETH=${eth_price:,.0f} | "
+                f"scanned={self.detector.stats.get('positions_scanned', 0)} "
+                f"mc_batches={mc_batches} | "
                 f"found={self.stats['opportunities_found']} "
                 f"arbs={self.stats['dex_arb_opportunities']} "
                 f"omni={self.stats['omni_bridge_signals']} "
                 f"profitable={self.stats['profitable_opportunities']} "
                 f"executed={self.stats['executions_succeeded']}/{self.stats['executions_attempted']} "
-                f"profit=${self.stats['total_profit_usd']:.2f}"
+                f"arb_exec={self.stats['dex_arb_executions_succeeded']}/{self.stats['dex_arb_executions_attempted']} "
+                f"profit=${self.stats['total_profit_usd']:.2f} "
+                f"arb_profit=${self.stats['dex_arb_profit_usd']:.2f}"
             )
 
         # ── STAGE 1: Detection (ML-scored + NFT + mempool) ──
         opportunities = await self._stage_1_detect()
+
+        # ── ZERO-REVERT PIPELINE: Feed ALL detected positions for oracle tracking ──
+        # Feed even when no profitable positions — ZRP watches for HF crossing <1.0
+        if opportunities:
+            self._sync_zrp_watchlist(opportunities)
+            self._sync_jit_watchlist(opportunities)
+
+        # Also feed the detector's priority queue (near-liquidation candidates)
+        # which may not pass full profitability analysis yet but should be monitored
+        self._sync_zrp_priority_queue()
 
         if not opportunities:
             return
 
         self.stats["opportunities_found"] += len(opportunities)
 
-        # ── MODULE 11: Feed watchlist into JIT Timing Optimizer ──
-        self._sync_jit_watchlist(opportunities)
-
-        # ── ZERO-REVERT PIPELINE: Feed position index for oracle/mempool tracking ──
-        self._sync_zrp_watchlist(opportunities)
 
         # ── STAGE 2: Analysis (multi-exit + surplus + RL-tuned) ──
         profitable = await self._stage_2_analyse(opportunities)
@@ -481,13 +542,14 @@ class Pipeline:
             exec_latency = (time.time() - exec_start) * 1000
 
             # ── STAGE 7: Analytics + RL recording ──
+            eth_price = getattr(self.detector, '_eth_price_usd', 2000.0)
             profit = result.get("profit_usd", 0)
             self.analytics.record(ExecutionRecord(
                 timestamp=time.time(),
                 chain_id=chain_id,
                 protocol=opp_pos.protocol,
                 collateral_asset=opp_pos.collateral_asset,
-                debt_amount_usd=opp_pos.debt_amount / 1e18 * 2500,
+                debt_amount_usd=opp_pos.debt_amount / 1e18 * eth_price,
                 profit_usd=profit,
                 gas_cost_usd=opp_profit.gas_cost_usd,
                 flash_loan_fee_usd=opp_profit.flash_loan_fee_usd,
@@ -659,30 +721,134 @@ class Pipeline:
     async def _stage_2_analyse(
         self, positions: List[LiquidatablePosition]
     ) -> List[tuple]:
-        """Stage 2: Multi-exit + surplus + RL-tuned profitability."""
+        """Stage 2: Multi-exit + surplus + RL-tuned profitability.
+
+        DEX arb and omni-channel positions are FAST-TRACKED — they have
+        pre-computed profit from Stage 1 and don't need the liquidation
+        profitability calculator.  Only liquidation positions go through
+        the full analysis pipeline.
+        """
         approved: List[tuple] = []
+
+        # Use live ETH price from detector (falls back to 2000)
+        eth_price = getattr(self.detector, '_eth_price_usd', 2000.0)
 
         for pos in positions:
             # Quick reject: if Stage 1 already estimates negative profit, skip
             if hasattr(pos, 'estimated_profit_usd') and pos.estimated_profit_usd < 0:
-                logger.debug(f"⏭️ Skip {pos.user[:12]}…: negative estimated profit ${pos.estimated_profit_usd:.2f}")
+                logger.debug(f"Skip {pos.user[:12]}...: negative estimated profit ${pos.estimated_profit_usd:.2f}")
                 continue
 
             # Get RL-tuned parameters for this chain
             rl_params = self.rl_tuner.get_params(pos.chain_id)
 
-            debt_usd = pos.debt_amount / 1e18 * 2500
-            coll_usd = pos.collateral_amount / 1e18 * 2500
+            # ── FAST-TRACK: DEX arb / omni positions ──
+            # These have pre-computed profit from the scanner and don't need
+            # liquidation-specific analysis (bonus, close factor, etc.)
+            is_arb = pos.protocol in ("dex_arb",) or pos.protocol.startswith("omni_")
+            if is_arb:
+                net_profit = getattr(pos, 'estimated_profit_usd', 0.0)
+
+                # Still apply minimum profit threshold
+                if net_profit < rl_params.min_profit_usd:
+                    logger.debug(
+                        f"Skip arb: ${net_profit:.2f} < min ${rl_params.min_profit_usd:.2f}"
+                    )
+                    continue
+
+                # Lightweight risk check for arbs: gas cap only
+                w3 = self.detector.w3_providers.get(pos.chain_id)
+                gas_ok = True
+                gas_gwei = 0.0
+                if w3:
+                    try:
+                        gas_gwei = w3.eth.gas_price / 1e9
+                        gas_ok = gas_gwei <= self.config.execution.gas_price_cap_gwei
+                    except Exception:
+                        pass
+
+                if not gas_ok:
+                    logger.debug(f"Skip arb: gas {gas_gwei:.1f} > cap")
+                    continue
+
+                # Build a lightweight ProfitabilityResult for the execution path
+                from .stage_2_analysis.profitability_calculator import ExitStrategy
+
+                # Use live gas cost (already fetched above)
+                live_gas_cost_usd = 0.0
+                if w3 and gas_gwei > 0:
+                    # Estimate 350K gas for arb swap
+                    eth_gas_cost = (350_000 * gas_gwei * 1e9) / 1e18
+                    live_gas_cost_usd = eth_gas_cost * eth_price
+
+                prof = ProfitabilityResult(
+                    is_profitable=True,
+                    net_profit_usd=net_profit,
+                    gross_profit_usd=net_profit,
+                    gas_cost_usd=live_gas_cost_usd,
+                    flash_loan_fee_usd=0.0,
+                    slippage_cost_usd=0.0,
+                    roi_percent=(net_profit / max(1.0, pos.debt_amount / 1e18 * eth_price)) * 100,
+                    capital_required_usd=0.0,
+                    best_provider="aave_v3",
+                    best_exit_strategy=ExitStrategy.SELL_DEX,
+                    surplus_profit_usd=0.0,
+                    gas_token_savings_usd=0.0,
+                    fee_rebate_usd=0.0,
+                    cross_chain_advantage_usd=0.0,
+                )
+
+                # Lightweight risk assessment
+                from .stage_2_analysis.risk_manager import RiskLevel
+                risk = RiskAssessment(
+                    risk_level=RiskLevel.LOW,
+                    approved=True,
+                    reasons=["Arb fast-tracked — pre-computed profit"],
+                    net_profit_usd=net_profit,
+                    gas_price_gwei=gas_gwei,
+                    gas_within_cap=gas_ok,
+                    suggested_slippage=0.005,
+                )
+
+                approved.append((pos, prof, risk))
+                logger.info(
+                    f"⚡ FAST-TRACK: {pos.protocol} ${net_profit:.2f} "
+                    f"on chain {pos.chain_id}"
+                )
+                continue
+
+            # ── STANDARD LIQUIDATION ANALYSIS ──
+            debt_usd = pos.debt_amount / 1e18 * eth_price
+            coll_usd = pos.collateral_amount / 1e18 * eth_price
 
             # Skip if below RL-tuned min_debt
             if debt_usd < rl_params.min_debt_usd:
                 continue
+
+            # Skip preemptive positions that can't be liquidated yet (HF > 1.0)
+            if hasattr(pos, 'health_factor') and pos.health_factor > 1.0:
+                logger.debug(
+                    f"Skip {pos.user[:12]}...: HF={pos.health_factor:.3f} > 1.0 — not liquidatable yet"
+                )
+                continue
+
+            # Get live gas price for accurate profitability (avoid stale defaults)
+            live_gas_gwei = None
+            w3_for_gas = self.detector.w3_providers.get(pos.chain_id)
+            if w3_for_gas:
+                try:
+                    live_gas_gwei = w3_for_gas.eth.gas_price / 1e9
+                    self.calculator.record_gas_price(pos.chain_id, live_gas_gwei)
+                except Exception:
+                    pass
 
             prof = self.calculator.calculate(
                 debt_amount_usd=debt_usd,
                 collateral_amount_usd=coll_usd,
                 liquidation_bonus=pos.liquidation_bonus,
                 flash_loan_provider="auto",
+                gas_price_gwei=live_gas_gwei,
+                eth_price_usd=eth_price,
                 chain_id=pos.chain_id,
                 volatility_class="volatile" if pos.volatility_index > 0.05 else "default",
             )
@@ -740,10 +906,11 @@ class Pipeline:
             approved.append((pos, prof, risk))
 
         if approved:
+            arb_count = sum(1 for p, _, _ in approved if p.protocol in ("dex_arb",) or p.protocol.startswith("omni_"))
+            liq_count = len(approved) - arb_count
             logger.info(
                 f"✅ Stage 2: {len(approved)}/{len(positions)} approved "
-                f"(exit: {approved[0][1].best_exit_strategy.value}, "
-                f"provider: {approved[0][1].best_provider})"
+                f"({liq_count} liquidations, {arb_count} arbs)"
             )
 
         return approved
@@ -759,7 +926,82 @@ class Pipeline:
         risk: RiskAssessment,
         gas_method: GasPaymentMethod = GasPaymentMethod.NATIVE,
     ) -> Dict:
-        """Stage 3+4+5: Flash loan → liquidation → surplus → MEV."""
+        """Stage 3+4+5: Route to correct executor based on opportunity type."""
+
+        is_arb = pos.protocol in ("dex_arb",) or pos.protocol.startswith("omni_")
+
+        if is_arb:
+            return await self._execute_arb(pos, prof, risk)
+        else:
+            return await self._execute_liquidation(pos, prof, risk, gas_method)
+
+    async def _execute_arb(
+        self,
+        pos: LiquidatablePosition,
+        prof: ProfitabilityResult,
+        risk: RiskAssessment,
+    ) -> Dict:
+        """Execute a DEX arb or omni-channel opportunity via DexArbExecutor."""
+        logger.info(
+            f"🔧 ARB EXEC: {pos.protocol} on chain {pos.chain_id} "
+            f"profit≈${prof.net_profit_usd:.2f} "
+            f"slippage={risk.suggested_slippage:.1%}"
+        )
+
+        # Guard: arb executor must be available
+        if self.arb_executor is None:
+            logger.warning("⚠️ DexArbExecutor not available — scan-only mode for arbs")
+            return {"success": False, "profit_usd": 0, "error": "No arb executor"}
+
+        try:
+            self.stats["dex_arb_executions_attempted"] += 1
+            result: ArbExecutionResult = await self.arb_executor.execute(pos)
+
+            if result.success:
+                self.stats["dex_arb_executions_succeeded"] += 1
+                self.stats["dex_arb_profit_usd"] += result.profit_usd
+
+                logger.info(
+                    f"🎉 ARB TX CONFIRMED: {result.tx_hash} "
+                    f"block={result.block_number} "
+                    f"profit=${result.profit_usd:.2f} "
+                    f"gas=${result.gas_cost_usd:.2f}"
+                )
+
+                # Feed outcome to Omni-Scope ML
+                if self.omni_scope and hasattr(self.omni_scope, 'record_execution_outcome'):
+                    self.omni_scope.record_execution_outcome(
+                        signal=None, profit=result.profit_usd, success=True,
+                    )
+
+                return {
+                    "success": True,
+                    "profit_usd": result.profit_usd,
+                    "tx_hash": result.tx_hash,
+                    "block_number": result.block_number,
+                    "gas_used": result.gas_used,
+                    "gas_cost_usd": result.gas_cost_usd,
+                }
+            else:
+                logger.warning(f"❌ Arb execution failed: {result.error_message}")
+                return {
+                    "success": False,
+                    "profit_usd": 0,
+                    "error": result.error_message,
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Arb execution exception: {e}")
+            return {"success": False, "profit_usd": 0, "error": str(e)}
+
+    async def _execute_liquidation(
+        self,
+        pos: LiquidatablePosition,
+        prof: ProfitabilityResult,
+        risk: RiskAssessment,
+        gas_method: GasPaymentMethod = GasPaymentMethod.NATIVE,
+    ) -> Dict:
+        """Execute a liquidation via LiquidationExecutor."""
         logger.info(
             f"🔧 Executing: {pos.user[:12]}… on {pos.protocol} "
             f"chain {pos.chain_id} | provider={prof.best_provider} "
@@ -873,8 +1115,8 @@ class Pipeline:
             await self.jit_engine.stop()
             jit_stats = self.jit_engine.get_stats()
             self.stats["jit_positions_tracked"] = jit_stats.get("jit_positions", 0)
-            self.stats["jit_simulations_run"] = jit_stats.get("simulations_run", 0)
-            self.stats["jit_simulations_passed"] = jit_stats.get("simulations_passed", 0)
+            self.stats["jit_preflight_checks"] = jit_stats.get("preflight_checks", 0)
+            self.stats["jit_preflight_passed"] = jit_stats.get("preflight_passed", 0)
             self.stats["jit_txs_broadcast"] = jit_stats.get("txs_broadcast", 0)
             self.stats["jit_txs_confirmed"] = jit_stats.get("txs_confirmed", 0)
             self.stats["jit_txs_reverted"] = jit_stats.get("txs_reverted", 0)
@@ -944,8 +1186,8 @@ class Pipeline:
         if self.jit_engine:
             logger.info(f"\n  ─── Module 11: JIT Timing Optimizer ───")
             logger.info(f"  JIT positions tracked:   {self.stats['jit_positions_tracked']}")
-            logger.info(f"  Simulations run:         {self.stats['jit_simulations_run']}")
-            logger.info(f"  Simulations passed:      {self.stats['jit_simulations_passed']}")
+            logger.info(f"  Preflight checks:        {self.stats['jit_preflight_checks']}")
+            logger.info(f"  Preflight passed:        {self.stats['jit_preflight_passed']}")
             logger.info(f"  TXs broadcast:           {self.stats['jit_txs_broadcast']}")
             logger.info(f"  TXs confirmed:           {self.stats['jit_txs_confirmed']}")
             logger.info(f"  TXs reverted:            {self.stats['jit_txs_reverted']}")

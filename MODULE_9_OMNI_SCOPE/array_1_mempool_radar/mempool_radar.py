@@ -8,9 +8,9 @@ Capabilities:
   1. Multi-Provider Subscription (bloXroute, Blocknative, Infura WS)
   2. Oracle Update Sniffing — detect pending price updates → pre-compute liquidations
   3. Large Swap Detection — flag price-moving trades → prepare backrun bundles
-  4. Transaction Simulation — fork-simulate pending TXs to predict post-state
+  4. Transaction Verification — fork-verify pending TXs to predict post-state
 
-Data flow: Raw pending TX → classify → simulate → emit OpportunitySignal → DataBus
+Data flow: Raw pending TX → classify → verify → emit OpportunitySignal → DataBus
 """
 
 import asyncio
@@ -236,7 +236,7 @@ class MempoolRadar:
         """Connect to Blocknative for transaction lifecycle events."""
         # Blocknative provides pre-chain and in-mempool status updates
         while self._running:
-            await asyncio.sleep(60)  # Placeholder — real implementation uses their SDK
+            await asyncio.sleep(60)  # TODO — real implementation uses their SDK
 
     # ------------------------------------------------------------------
     # Fallback: poll pending block via RPC
@@ -296,7 +296,7 @@ class MempoolRadar:
     def _process_raw_tx(self, tx_data: dict, provider: str):
         """Process raw TX data from any provider."""
         self.stats["txs_received"] += 1
-        # In production: full classification + simulation here
+        # In production: full classification + verification here
 
     def _classify_and_emit(self, tx: dict, w3: Web3):
         """Classify a pending TX and emit appropriate signal(s)."""

@@ -1,37 +1,53 @@
 #!/usr/bin/env python3
 """
-STAGE 1 — Collateral Health Monitor (Module 1)
-=================================================
+STAGE 1 — Collateral Health Monitor (Module 1) [Enhanced]
+===========================================================
 Continuously scans all tracked positions and flags those with
 healthFactor < 1.05 (or protocol-specific thresholds) as candidates
 for automated risk mitigation.
 
 Integration:
-  - Consumes position data via Aave/Compound/MakerDAO on-chain calls
-  - Queries every new block (WebSocket newHeads) or at configurable intervals
-  - Filters positions where health_factor < threshold AND debt > MIN_DEBT
-  - Outputs AtRiskPosition objects to a queue for downstream processing
+  - Consumes position_snapshots via TimescaleDB hypertable OR direct RPC
+  - Listens for new blocks via WebSocket `newHeads` subscription
+  - Falls back to 3-second polling for L2s / HTTP-only RPCs
+  - Filters positions where health_factor < threshold AND debt_usd > MIN_DEBT
+  - Outputs AtRiskPosition objects to Redis queue for downstream processing
 
 Protocol-Specific Liquidatability:
-  - Aave v2/v3: healthFactor < 1e18
-  - Compound v2: shortfall > 0 from getAccountLiquidity()
-  - MakerDAO: (ink * spot) < (art * rate)
+  - Aave v2:      healthFactor < 1e18
+  - Aave v3:      healthFactor < 1e18 (base denominated in USD 8-dec)
+  - Compound v2:  shortfall > 0 from getAccountLiquidity()
+  - Compound v3:  isLiquidatable(account) via Comet contract
+  - MakerDAO:     (ink * spot) < (art * rate)
+
+Outputs:
+  - AtRiskPosition queue → Redis stream `cryo:at_risk_positions`
+  - Real-time metrics via stats property
 
 Zero capital required — all operations are read-only.
 """
 
 import asyncio
+import json
 import logging
 import time
 from collections import defaultdict
 from decimal import Decimal, getcontext
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 
 getcontext().prec = 50
 
 logger = logging.getLogger(__name__)
+
+# Optional dependencies — graceful degrade if not installed
+try:
+    import redis.asyncio as aioredis
+    REDIS_AVAILABLE = True
+except ImportError:
+    aioredis = None  # type: ignore
+    REDIS_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +69,8 @@ class Protocol(Enum):
     COMPOUND_V2 = "compound_v2"
     COMPOUND_V3 = "compound_v3"
     MAKERDAO = "makerdao"
+    EULER = "euler"
+    LIQUITY = "liquity"
 
 
 @dataclass
@@ -98,6 +116,12 @@ class MonitorConfig:
     max_positions_per_scan: int = 500
     oracle_staleness_seconds: int = 3600
     chains: Dict[int, Dict[str, Any]] = field(default_factory=dict)
+    # Redis queue for downstream modules (Module 2 → Incentive Calculator)
+    redis_url: str = "redis://localhost:6379"
+    redis_stream: str = "cryo:at_risk_positions"
+    # WebSocket subscription for block-by-block scanning
+    use_websocket: bool = True
+    ws_reconnect_delay: int = 5
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +211,30 @@ CHAINLINK_ABI = [
     },
 ]
 
+COMPOUND_V3_COMET_ABI = [
+    {
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "isLiquidatable",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "borrowBalanceOf",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "account", "type": "address"}, {"name": "asset", "type": "address"}],
+        "name": "collateralBalanceOf",
+        "outputs": [{"name": "", "type": "uint128"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Collateral Health Monitor
@@ -209,6 +257,13 @@ class CollateralHealthMonitor:
         self._total_at_risk_found: int = 0
         self._last_scan_time: float = 0.0
         self._running: bool = False
+        # Redis queue for downstream pipeline
+        self._redis: Optional[Any] = None
+        # Callback hooks: MODULE_11 oracle trigger integration
+        self._oracle_trigger_callback: Optional[Callable] = None
+        # Per-chain block tracking
+        self._last_block: Dict[int, int] = {}
+        self._scan_callbacks: List[Callable] = []
 
     # ── Properties ──────────────────────────────────────────────────────
 
@@ -462,3 +517,209 @@ class CollateralHealthMonitor:
             return False, f"Stale price (age={age}s, max={max_staleness}s)"
 
         return True, "Valid"
+
+    # ── Compound V3 (Comet) Checks ───────────────────────────────────
+
+    def check_compound_v3_health(
+        self,
+        user: str,
+        is_liquidatable: bool,
+        borrow_balance: int,
+        collateral_balance: int,
+    ) -> HealthCheckResult:
+        """
+        Check a Compound V3 (Comet) position's health.
+
+        Compound V3 uses `isLiquidatable(account)` directly — no HF math needed.
+        We synthesize an approximate HF for unified downstream processing.
+
+        Args:
+            user: Account address
+            is_liquidatable: Result of comet.isLiquidatable(user)
+            borrow_balance: borrowBalanceOf(user) — debt in base asset units
+            collateral_balance: Summed collateral value in base units
+
+        Returns:
+            HealthCheckResult with risk assessment
+        """
+        if borrow_balance == 0:
+            return HealthCheckResult(
+                user=user, is_at_risk=False,
+                health_factor=Decimal("Infinity"),
+                collateral_usd=Decimal(collateral_balance),
+            )
+
+        # Synthesize approximate HF from ratio
+        hf = Decimal(collateral_balance) / Decimal(max(borrow_balance, 1))
+
+        return HealthCheckResult(
+            user=user,
+            is_at_risk=is_liquidatable,
+            health_factor=hf,
+            collateral_usd=Decimal(collateral_balance),
+            debt_usd=Decimal(borrow_balance),
+        )
+
+    # ── Redis Queue Integration ──────────────────────────────────────
+
+    async def connect_redis(self) -> bool:
+        """Connect to Redis for downstream queue publishing."""
+        if not REDIS_AVAILABLE:
+            logger.warning("redis.asyncio not installed — queue disabled (pip install redis)")
+            return False
+        try:
+            self._redis = aioredis.from_url(
+                self._config.redis_url,
+                decode_responses=True,
+                socket_connect_timeout=5,
+            )
+            await self._redis.ping()
+            logger.info("✅ Redis connected for at-risk position queue")
+            return True
+        except Exception as e:
+            logger.warning("Redis connection failed (%s) — running without queue", e)
+            self._redis = None
+            return False
+
+    async def publish_position(self, position: AtRiskPosition) -> bool:
+        """Publish an at-risk position to the Redis stream for Module 2."""
+        if not self._redis:
+            return False
+        try:
+            payload = {
+                "chain_id": str(position.chain_id),
+                "protocol": position.protocol.value,
+                "user": position.user,
+                "debt_asset": position.debt_asset,
+                "collateral_asset": position.collateral_asset,
+                "debt_amount": str(position.debt_amount),
+                "collateral_amount": str(position.collateral_amount),
+                "health_factor": str(position.health_factor),
+                "debt_usd": str(position.debt_usd),
+                "collateral_usd": str(position.collateral_usd),
+                "liquidation_bonus_bps": str(position.liquidation_bonus_bps),
+                "max_gas_price": str(position.max_gas_price),
+                "risk_level": position.risk_level.name,
+                "timestamp": str(position.timestamp),
+            }
+            await self._redis.xadd(self._config.redis_stream, payload, maxlen=10_000)
+            return True
+        except Exception as e:
+            logger.warning("Redis publish failed: %s", e)
+            return False
+
+    # ── Async Block-by-Block Scanner ─────────────────────────────────
+
+    async def run_block_listener(
+        self,
+        w3,
+        chain_id: int,
+        scan_fn: Callable,
+    ):
+        """
+        Subscribe to newHeads (WebSocket) or poll at interval.
+
+        Each new block triggers a scan cycle via `scan_fn(block_number)`.
+        Integrates with MODULE_11 oracle triggers when callback is set.
+
+        Args:
+            w3: Web3 instance (WebSocket preferred for real-time)
+            chain_id: Chain ID for this listener
+            scan_fn: async callable(block_number) → List[AtRiskPosition]
+        """
+        self._running = True
+        logger.info(
+            "🔍 Health monitor started on chain %d (ws=%s, interval=%ds)",
+            chain_id, self._config.use_websocket, self._config.scan_interval_seconds,
+        )
+
+        while self._running:
+            try:
+                block_num = w3.eth.block_number
+                if block_num == self._last_block.get(chain_id, 0):
+                    await asyncio.sleep(self._config.scan_interval_seconds)
+                    continue
+
+                self._last_block[chain_id] = block_num
+
+                # Execute scan
+                positions = await scan_fn(block_num)
+                positions_scanned = len(positions) if positions else 0
+                self.record_scan(positions_scanned)
+
+                for pos in (positions or []):
+                    self.add_at_risk_position(pos)
+                    await self.publish_position(pos)
+
+                    # MODULE_11 integration: fire oracle trigger if position is LIQUIDATABLE
+                    if (
+                        pos.risk_level == RiskLevel.LIQUIDATABLE
+                        and self._oracle_trigger_callback
+                    ):
+                        try:
+                            await self._oracle_trigger_callback(pos)
+                        except Exception as e:
+                            logger.warning("Oracle trigger callback error: %s", e)
+
+                # Notify registered callbacks
+                for cb in self._scan_callbacks:
+                    try:
+                        await cb(chain_id, block_num, positions or [])
+                    except Exception as e:
+                        logger.warning("Scan callback error: %s", e)
+
+            except Exception as e:
+                logger.error("Block listener error (chain %d): %s", chain_id, e)
+                await asyncio.sleep(self._config.ws_reconnect_delay)
+
+            await asyncio.sleep(self._config.scan_interval_seconds)
+
+        logger.info("Health monitor stopped on chain %d", chain_id)
+
+    def stop(self):
+        """Signal the block listener to stop."""
+        self._running = False
+
+    # ── Hook Registration ────────────────────────────────────────────
+
+    def register_oracle_trigger(self, callback: Callable):
+        """
+        Register MODULE_11 oracle trigger callback.
+
+        When a position hits LIQUIDATABLE, this callback fires with the
+        AtRiskPosition, allowing the timing engine to bundle a mitigation
+        TX in the same block as the oracle update.
+        """
+        self._oracle_trigger_callback = callback
+        logger.info("🔗 Oracle trigger callback registered (MODULE_11 integration)")
+
+    def register_scan_callback(self, callback: Callable):
+        """Register a callback for each scan cycle completion."""
+        self._scan_callbacks.append(callback)
+
+    # ── Batch Position Processing ────────────────────────────────────
+
+    async def process_batch(
+        self,
+        positions: List[AtRiskPosition],
+    ) -> Dict[str, int]:
+        """
+        Process a batch of positions: classify, queue, trigger.
+
+        Returns:
+            Dict with counts: liquidatable, critical, at_risk, skipped
+        """
+        counts: Dict[str, int] = defaultdict(int)
+        for pos in positions:
+            pos.risk_level = self.classify_risk(pos.health_factor)
+
+            # Filter: skip if debt below threshold
+            if pos.debt_usd < self._config.min_debt_usd:
+                counts["skipped"] += 1
+                continue
+
+            self.add_at_risk_position(pos)
+            await self.publish_position(pos)
+            counts[pos.risk_level.name.lower()] += 1
+
+        return dict(counts)

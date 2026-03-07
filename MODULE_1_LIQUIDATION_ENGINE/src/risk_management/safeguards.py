@@ -6,7 +6,7 @@ gas spikes, or unexpected on-chain conditions.
 
 Features:
 - On-chain MinProfit enforcement (mirrors Solidity require())
-- Off-chain pre-flight simulation (eth_call with state override)
+- Off-chain pre-flight verification (eth_call with state override)
 - Real-time gas price monitoring with cap enforcement
 - Slippage tolerance for DEX swaps of seized collateral
 - Oracle staleness detection
@@ -65,9 +65,9 @@ class RiskAssessment:
     oracle_stale: bool = False
     oracle_age_seconds: int = 0
 
-    # Simulation
-    simulation_passed: bool = False
-    simulation_error: Optional[str] = None
+    # Preflight verification
+    preflight_passed: bool = False
+    preflight_error: Optional[str] = None
 
     # Slippage
     expected_slippage_percent: float = 0.0
@@ -103,7 +103,7 @@ class RiskManager:
       1. Profitability re-check (prices may have moved since detection)
       2. Gas price within cap
       3. Oracle freshness (Chainlink staleness check)
-      4. Dry-run simulation via eth_call
+      4. Dry-run verification via eth_call
       5. Circuit breaker not tripped
       6. User not in cooldown
       7. Slippage within tolerance
@@ -156,7 +156,7 @@ class RiskManager:
             "rejected_profitability": 0,
             "rejected_gas": 0,
             "rejected_oracle": 0,
-            "rejected_simulation": 0,
+            "rejected_preflight": 0,
             "rejected_circuit_breaker": 0,
             "rejected_cooldown": 0,
             "start_time": time.time(),
@@ -270,7 +270,7 @@ class RiskManager:
                 risk_level = RiskLevel.CRITICAL
                 self.stats["rejected_oracle"] += 1
 
-        # ---- 6. PRODUCTION: Simulation disabled — chain is the judge ----
+        # ---- 6. PRODUCTION: Preflight disabled — chain is the judge ----
         sim_passed = True
         sim_error = None
 
@@ -312,19 +312,19 @@ class RiskManager:
             gas_price_within_cap=gas_within_cap,
             oracle_stale=oracle_stale,
             oracle_age_seconds=oracle_age,
-            simulation_passed=sim_passed,
-            simulation_error=sim_error,
+            preflight_passed=sim_passed,
+            preflight_error=sim_error,
             expected_slippage_percent=expected_slippage,
         )
 
     # ------------------------------------------------------------------
-    # Simulation (off-chain pre-flight via eth_call)
+    # Preflight verification (off-chain pre-flight via eth_call)
     # ------------------------------------------------------------------
 
-    async def _simulate(
+    async def _preflight(
         self, w3: Web3, calldata: bytes
     ) -> Tuple[bool, Optional[str]]:
-        """Simulate transaction via eth_call — no gas consumed"""
+        """Verify transaction via eth_call — no gas consumed"""
         try:
             w3.eth.call({"data": calldata})
             return True, None
@@ -441,7 +441,7 @@ class RiskManager:
         print(f"    - Profit:    {stats['rejected_profitability']}")
         print(f"    - Gas:       {stats['rejected_gas']}")
         print(f"    - Oracle:    {stats['rejected_oracle']}")
-        print(f"    - Simulation:{stats['rejected_simulation']}")
+        print(f"    - Preflight:{stats['rejected_preflight']}")
         print(f"    - Breaker:   {stats['rejected_circuit_breaker']}")
         print(f"    - Cooldown:  {stats['rejected_cooldown']}")
         cb = stats["circuit_breaker"]

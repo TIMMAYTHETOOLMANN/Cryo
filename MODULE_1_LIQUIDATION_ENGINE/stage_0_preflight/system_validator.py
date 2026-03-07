@@ -30,16 +30,17 @@ from ..config.settings import ConfigManager, get_config
 logger = logging.getLogger(__name__)
 
 # Minimum gas balances (in ETH / native token) required per chain to attempt
-# a single liquidation TX.  These are conservative estimates.
+# a single liquidation TX.  Calibrated for ultra-low gas environment (sub-1-gwei).
+# At 0.03 gwei: 500K gas = 0.000015 ETH per TX; 0.005 ETH ≈ 330 TXs.
 MIN_GAS_BALANCES: Dict[int, float] = {
-    1:     0.01,    # Ethereum — ~$25 at 2500 ETH
-    42161: 0.0005,  # Arbitrum — very cheap
-    10:    0.0005,  # Optimism
-    8453:  0.0005,  # Base
-    137:   0.5,     # Polygon (MATIC)
-    43114: 0.05,    # Avalanche (AVAX)
-    56:    0.005,   # BSC (BNB)
-    324:   0.0005,  # zkSync
+    1:     0.005,   # Ethereum — ~330 TXs at 0.03 gwei
+    42161: 0.0002,  # Arbitrum — extremely cheap
+    10:    0.0002,  # Optimism — extremely cheap
+    8453:  0.0002,  # Base — extremely cheap
+    137:   0.1,     # Polygon (MATIC)
+    43114: 0.01,    # Avalanche (AVAX)
+    56:    0.002,   # BSC (BNB)
+    324:   0.0002,  # zkSync
 }
 
 

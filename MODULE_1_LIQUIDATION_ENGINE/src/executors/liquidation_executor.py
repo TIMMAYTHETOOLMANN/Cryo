@@ -8,7 +8,7 @@ Supports:
 - Aave V2/V3 liquidationCall via flash loan
 - Compound V2 liquidateBorrow via flash loan
 - MakerDAO bark / bite via flash loan
-- Dry-run simulation (eth_call) before submission
+- Dry-run verification (eth_call) before submission
 - Automatic provider selection via FlashLoanAggregator
 """
 
@@ -199,8 +199,8 @@ class LiquidationExecutor:
     Workflow:
     1. Receive LiquidationRequest from Opportunity Detector
     2. Verify profitability via ProfitabilityCalculator
-    3. Simulate execution via eth_call (dry-run)
-    4. If simulation succeeds, submit live transaction
+    3. Verify execution via eth_call (dry-run)
+    4. If verification succeeds, submit live transaction
     5. Optionally route through Flashbots for MEV protection
     6. Return LiquidationResult with profit data
     """
@@ -233,7 +233,7 @@ class LiquidationExecutor:
             "liquidations_succeeded": 0,
             "liquidations_failed": 0,
             "total_profit_usd": 0.0,
-            "simulations_run": 0,
+            "preflight_checks": 0,
             "start_time": time.time(),
         }
 
@@ -296,7 +296,7 @@ class LiquidationExecutor:
         Steps:
           1. Pre-flight profitability check
           2. Select best flash loan provider
-          3. Dry-run simulation via eth_call
+          3. Dry-run verification via eth_call
           4. Submit transaction (direct or via Flashbots)
           5. Wait for receipt & parse events
         """
@@ -349,7 +349,7 @@ class LiquidationExecutor:
         else:
             logger.info(f"⚡ Using requested provider: {request.flash_loan_provider.value}")
 
-        # ---- 3. PRODUCTION: Skip simulation — submit immediately ----
+        # ---- 3. PRODUCTION: Skip verification — submit immediately ----
         logger.info("⚡ PRODUCTION MODE — submitting transaction directly")
 
         # ---- 4. Submit transaction ----
@@ -421,14 +421,14 @@ class LiquidationExecutor:
         return bonuses.get(protocol, 0.05)
 
     # ------------------------------------------------------------------
-    # Simulation (dry-run via eth_call)
+    # Preflight Verification (dry-run via eth_call)
     # ------------------------------------------------------------------
 
-    async def _simulate(
+    async def _preflight(
         self, request: LiquidationRequest, w3: Web3, private_key: str
     ) -> Tuple[bool, Optional[str]]:
         """
-        Simulate liquidation via eth_call (no gas spent).
+        Verify liquidation via eth_call (no gas spent).
         Returns (success, error_message).
         """
         contract = self._get_contract(request.chain_id)
@@ -452,7 +452,7 @@ class LiquidationExecutor:
                 "nonce": w3.eth.get_transaction_count(account.address),
             })
 
-            # Simulate via eth_call
+            # Verify via eth_call
             w3.eth.call(tx_data)
             return True, None
 
