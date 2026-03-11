@@ -168,7 +168,9 @@ class RTokenArbitrageDetector:
         self.trade_size_usd = trade_size_usd
         self.w3_providers: Dict[int, Web3] = {}
         self._rtoken_states: Dict[str, RTokenState] = {}  # "chain:addr" → state
-        self._known_rtokens: Dict[int, Dict[str, str]] = dict(KNOWN_RTOKENS)
+        self._known_rtokens: Dict[int, Dict[str, str]] = {
+            k: dict(v) for k, v in KNOWN_RTOKENS.items()
+        }
 
         self.stats = {
             "scans": 0,
