@@ -56,6 +56,57 @@ class ArbOpportunity:
     block_number: int
 
 
+@dataclass
+class TransactionRecord:
+    """A swap transaction observed on-chain or in the mempool."""
+    tx_hash: str
+    sender: str               # EOA that submitted the tx
+    token_in: str             # input token address
+    token_out: str            # output token address
+    amount_in: int            # in wei
+    amount_out: int           # in wei
+    dex: str                  # DEX name
+    chain_id: int
+    block_number: int
+    timestamp: int
+    contract_address: str = ""  # interacted contract (for entity linking)
+
+
+@dataclass
+class ArbPairCandidate:
+    """A candidate arbitrage pair detected by the heuristic engine."""
+    tx_a: TransactionRecord
+    tx_b: TransactionRecord
+    heuristics_passed: List[str]   # which of H1-H4 matched
+    marginal_difference_pct: float # intermediate amount difference %
+    time_gap_seconds: int
+    is_cyclic: bool
+    is_entity_linked: bool
+    estimated_profit_usd: float = 0.0
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Arbitrage heuristic thresholds (configurable via env)
+# ────────────────────────────────────────────────────────────────────────
+
+# H2: Marginal difference threshold (0.5% per academic research)
+MARGINAL_DIFF_THRESHOLD = float(
+    __import__("os").getenv("ARB_MARGINAL_DIFF_PCT", "0.5")
+) / 100.0
+
+# H3: Temporal windows
+TEMPORAL_WINDOW_STABLE_NATIVE_S = int(
+    __import__("os").getenv("ARB_TEMPORAL_WINDOW_STABLE_S", "12")
+)
+TEMPORAL_WINDOW_DEFAULT_S = int(
+    __import__("os").getenv("ARB_TEMPORAL_WINDOW_DEFAULT_S", "3600")
+)
+
+# Stablecoin symbols for H3 window selection
+STABLECOIN_SYMBOLS = {"USDC", "USDT", "DAI", "FRAX", "LUSD", "GHO", "BUSD"}
+NATIVE_SYMBOLS = {"WETH", "WMATIC", "WAVAX", "WBNB"}
+
+
 # ────────────────────────────────────────────────────────────────────────
 # Well-known token addresses per chain
 # ────────────────────────────────────────────────────────────────────────
@@ -636,3 +687,160 @@ class DexArbScanner:
             "chains_v3": len(self.quoters),
             "chains_v2": len(self.v2_routers),
         }
+
+    # ────────────────────────────────────────────────────────────────
+    # Universal Arbitrage Detection — Four-Heuristic Pair Matching
+    # ────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_token_symbol(address: str, chain_id: int) -> str:
+        """Resolve a token address to its symbol for heuristic checks."""
+        chain_tokens = TOKENS.get(chain_id, {})
+        addr_lower = address.lower()
+        for symbol, addr in chain_tokens.items():
+            if addr.lower() == addr_lower:
+                return symbol
+        return ""
+
+    @staticmethod
+    def _is_stablecoin_native_pair(token_a: str, token_b: str,
+                                    chain_id: int) -> bool:
+        """Check if both tokens are from the stablecoin-native set."""
+        sym_a = DexArbScanner._resolve_token_symbol(token_a, chain_id)
+        sym_b = DexArbScanner._resolve_token_symbol(token_b, chain_id)
+        combined = {sym_a, sym_b}
+        has_stable = bool(combined & STABLECOIN_SYMBOLS)
+        has_native = bool(combined & NATIVE_SYMBOLS)
+        return has_stable and has_native
+
+    @staticmethod
+    def _check_cyclic(tx_a: TransactionRecord,
+                      tx_b: TransactionRecord) -> bool:
+        """H1 — Cyclic: input/output assets form a closed loop."""
+        return (
+            tx_a.token_in.lower() == tx_b.token_out.lower()
+            and tx_a.token_out.lower() == tx_b.token_in.lower()
+        )
+
+    @staticmethod
+    def _check_marginal_difference(tx_a: TransactionRecord,
+                                   tx_b: TransactionRecord) -> Tuple[bool, float]:
+        """
+        H2 — Marginal Difference: the intermediate amounts differ
+        by at most ``MARGINAL_DIFF_THRESHOLD`` (default 0.5%).
+        We compare tx_a.amount_out with tx_b.amount_in (the
+        intermediate leg that should be nearly equal).
+        """
+        if tx_a.amount_out == 0 and tx_b.amount_in == 0:
+            return True, 0.0
+        reference = max(tx_a.amount_out, tx_b.amount_in)
+        if reference == 0:
+            return False, float("inf")
+        diff = abs(tx_a.amount_out - tx_b.amount_in) / reference
+        return diff <= MARGINAL_DIFF_THRESHOLD, diff
+
+    @staticmethod
+    def _check_temporal_window(tx_a: TransactionRecord,
+                               tx_b: TransactionRecord) -> Tuple[bool, int]:
+        """
+        H3 — Temporal Window: the time gap must be ≤12 s for
+        stablecoin-native pairs and ≤1 h otherwise.
+        """
+        gap = abs(tx_a.timestamp - tx_b.timestamp)
+        is_sn_pair = DexArbScanner._is_stablecoin_native_pair(
+            tx_a.token_in, tx_a.token_out, tx_a.chain_id
+        )
+        limit = (TEMPORAL_WINDOW_STABLE_NATIVE_S
+                 if is_sn_pair
+                 else TEMPORAL_WINDOW_DEFAULT_S)
+        return gap <= limit, gap
+
+    @staticmethod
+    def _check_entity_link(tx_a: TransactionRecord,
+                           tx_b: TransactionRecord) -> bool:
+        """
+        H4 — Entity Link: same EOA submitted both transactions,
+        or both interact with the same MEV contract.
+        """
+        if tx_a.sender.lower() == tx_b.sender.lower():
+            return True
+        if (tx_a.contract_address
+                and tx_a.contract_address.lower() == tx_b.contract_address.lower()):
+            return True
+        return False
+
+    def find_arbitrage_pairs(
+        self,
+        transactions: List[TransactionRecord],
+        *,
+        min_heuristics: int = 2,
+    ) -> List[ArbPairCandidate]:
+        """
+        Apply the four universal arbitrage heuristics to every
+        transaction pair and return candidates that pass at least
+        ``min_heuristics`` checks.
+
+        Heuristics (per academic research):
+          H1 — Cyclic: input/output assets form a loop
+          H2 — Marginal Difference: intermediate amounts differ ≤0.5%
+          H3 — Temporal Window: ≤12 s (stablecoin-native) or ≤1 h
+          H4 — Entity Link: same sender or same MEV contract
+
+        Parameters
+        ----------
+        transactions : list[TransactionRecord]
+            Recent/pending swap transactions to analyse.
+        min_heuristics : int
+            Minimum number of heuristics that must pass (default 2).
+
+        Returns
+        -------
+        list[ArbPairCandidate]
+            Ranked list of candidate pairs, most heuristics first.
+        """
+        candidates: List[ArbPairCandidate] = []
+
+        for i, tx_a in enumerate(transactions):
+            for tx_b in transactions[i + 1:]:
+                # Only consider same-chain pairs
+                if tx_a.chain_id != tx_b.chain_id:
+                    continue
+
+                passed: List[str] = []
+
+                # H1 — Cyclic
+                is_cyclic = self._check_cyclic(tx_a, tx_b)
+                if is_cyclic:
+                    passed.append("H1_CYCLIC")
+
+                # H2 — Marginal Difference
+                marginal_ok, marginal_pct = self._check_marginal_difference(
+                    tx_a, tx_b
+                )
+                if marginal_ok:
+                    passed.append("H2_MARGINAL")
+
+                # H3 — Temporal Window
+                temporal_ok, time_gap = self._check_temporal_window(tx_a, tx_b)
+                if temporal_ok:
+                    passed.append("H3_TEMPORAL")
+
+                # H4 — Entity Link
+                is_entity = self._check_entity_link(tx_a, tx_b)
+                if is_entity:
+                    passed.append("H4_ENTITY")
+
+                if len(passed) >= min_heuristics:
+                    candidates.append(ArbPairCandidate(
+                        tx_a=tx_a,
+                        tx_b=tx_b,
+                        heuristics_passed=passed,
+                        marginal_difference_pct=marginal_pct * 100,
+                        time_gap_seconds=time_gap,
+                        is_cyclic=is_cyclic,
+                        is_entity_linked=is_entity,
+                    ))
+
+        # Sort by number of heuristics passed (descending)
+        candidates.sort(key=lambda c: len(c.heuristics_passed), reverse=True)
+        return candidates

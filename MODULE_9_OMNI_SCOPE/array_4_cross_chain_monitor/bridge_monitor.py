@@ -399,3 +399,95 @@ class BridgeMonitor:
             **self.stats,
             "active_routes": len(self._active_routes),
         }
+
+    # ------------------------------------------------------------------
+    # Cross-Chain Price Feed — Live Delta Tracking
+    # ------------------------------------------------------------------
+
+    def fetch_cross_chain_prices(
+        self,
+        assets: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[int, float]]:
+        """
+        Return the latest cached price for each tracked asset on every
+        chain.  Format: ``{asset: {chain_id: price_usd, …}, …}``.
+
+        Parameters
+        ----------
+        assets : list[str] | None
+            Filter to specific assets.  ``None`` returns all.
+        """
+        result: Dict[str, Dict[int, float]] = {}
+        for (chain_id, token), node in self._nodes.items():
+            if assets and token not in assets:
+                continue
+            result.setdefault(token, {})[chain_id] = node.price_usd
+        return result
+
+    def calculate_cross_chain_deltas(
+        self,
+        assets: Optional[List[str]] = None,
+        *,
+        min_delta_pct: float = 0.5,
+    ) -> List[Dict]:
+        """
+        Compare the price of each asset across every chain pair
+        and return entries where the delta exceeds *min_delta_pct*.
+
+        Each returned dict contains::
+
+            {
+              "asset": str,
+              "chain_a": int,  "price_a": float,
+              "chain_b": int,  "price_b": float,
+              "delta_pct": float,          # absolute % difference
+              "direction": "a_to_b" | "b_to_a",  # buy low → sell high
+              "estimated_gross_profit_usd": float,
+            }
+        """
+        prices = self.fetch_cross_chain_prices(assets)
+        deltas: List[Dict] = []
+        threshold = min_delta_pct / 100.0
+
+        for asset, chain_prices in prices.items():
+            chains = sorted(chain_prices.keys())
+            for i, chain_a in enumerate(chains):
+                price_a = chain_prices[chain_a]
+                if price_a <= 0:
+                    continue
+                for chain_b in chains[i + 1:]:
+                    price_b = chain_prices[chain_b]
+                    if price_b <= 0:
+                        continue
+
+                    avg_price = (price_a + price_b) / 2.0
+                    if avg_price == 0:
+                        continue
+
+                    delta = abs(price_a - price_b) / avg_price
+                    if delta < threshold:
+                        continue
+
+                    # Direction: buy on the cheaper chain, sell on the pricier
+                    if price_a < price_b:
+                        direction = "a_to_b"
+                    else:
+                        direction = "b_to_a"
+
+                    # Rough gross estimate on a $10 000 trade
+                    estimated_gross = 10_000.0 * delta
+
+                    deltas.append({
+                        "asset": asset,
+                        "chain_a": chain_a,
+                        "price_a": price_a,
+                        "chain_b": chain_b,
+                        "price_b": price_b,
+                        "delta_pct": round(delta * 100, 4),
+                        "direction": direction,
+                        "estimated_gross_profit_usd": round(estimated_gross, 2),
+                    })
+
+        # Biggest delta first
+        deltas.sort(key=lambda d: d["delta_pct"], reverse=True)
+        return deltas
