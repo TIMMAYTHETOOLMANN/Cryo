@@ -101,6 +101,11 @@ KNOWN_RTOKENS: Dict[int, Dict[str, str]] = {
     },
 }
 
+# Gas cost estimates for RToken mint/redeem operations (in USD)
+L2_GAS_COST_USD = 0.50   # Arbitrum, Optimism, Base, Polygon
+L1_GAS_COST_USD = 5.00   # Ethereum mainnet
+L2_CHAIN_IDS = {42161, 10, 8453, 137}
+
 
 # ────────────────────────────────────────────────────────────────────────
 # Data models
@@ -310,7 +315,7 @@ class RTokenArbitrageDetector:
             direction = "mint_and_sell"
 
         gross_profit = self.trade_size_usd * (abs_spread / 100.0)
-        gas_cost = 0.50 if state.chain_id in {42161, 10, 8453, 137} else 5.0
+        gas_cost = L2_GAS_COST_USD if state.chain_id in L2_CHAIN_IDS else L1_GAS_COST_USD
         net_profit = gross_profit - gas_cost
 
         if net_profit <= 0:

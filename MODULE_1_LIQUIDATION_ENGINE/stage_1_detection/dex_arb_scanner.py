@@ -731,11 +731,9 @@ class DexArbScanner:
         We compare tx_a.amount_out with tx_b.amount_in (the
         intermediate leg that should be nearly equal).
         """
-        if tx_a.amount_out == 0 and tx_b.amount_in == 0:
-            return True, 0.0
-        reference = max(tx_a.amount_out, tx_b.amount_in)
-        if reference == 0:
+        if tx_a.amount_out == 0 or tx_b.amount_in == 0:
             return False, float("inf")
+        reference = max(tx_a.amount_out, tx_b.amount_in)
         diff = abs(tx_a.amount_out - tx_b.amount_in) / reference
         return diff <= MARGINAL_DIFF_THRESHOLD, diff
 

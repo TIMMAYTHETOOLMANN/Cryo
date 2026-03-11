@@ -131,12 +131,11 @@ class TestUniversalArbHeuristics:
         assert ok is True
 
     def test_h2_marginal_both_zero(self):
-        """H2 handles zero amounts gracefully."""
+        """H2 rejects zero amounts as invalid."""
         tx_a = _make_tx(amount_out=0)
         tx_b = _make_tx(amount_in=0)
         ok, pct = DexArbScanner._check_marginal_difference(tx_a, tx_b)
-        assert ok is True
-        assert pct == 0.0
+        assert ok is False
 
     # ── H3: Temporal Window ──────────────────────────────────────
 

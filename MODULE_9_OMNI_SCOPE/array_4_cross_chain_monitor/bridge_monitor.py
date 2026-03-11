@@ -429,6 +429,7 @@ class BridgeMonitor:
         assets: Optional[List[str]] = None,
         *,
         min_delta_pct: float = 0.5,
+        trade_size_usd: float = 10_000.0,
     ) -> List[Dict]:
         """
         Compare the price of each asset across every chain pair
@@ -474,8 +475,7 @@ class BridgeMonitor:
                     else:
                         direction = "b_to_a"
 
-                    # Rough gross estimate on a $10 000 trade
-                    estimated_gross = 10_000.0 * delta
+                    estimated_gross = trade_size_usd * delta
 
                     deltas.append({
                         "asset": asset,
