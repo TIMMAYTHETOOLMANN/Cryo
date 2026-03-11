@@ -13,10 +13,14 @@ from .subgraph_indexer import (
     UserPosition,
     IndexerStats,
 )
+from .rtoken_arbitrage_detector import (
+    RTokenArbitrageDetector, RTokenState, RTokenArbOpportunity,
+)
 __all__ = [
     "OpportunityDetector", "LiquidatablePosition", "ScanPriority",
     "NFTLiquidationDetector", "MempoolMonitor",
     "CollateralHealthMonitor", "AtRiskPosition", "RiskLevel", "Protocol", "MonitorConfig",
     "SubgraphIndexer", "LiquidationCandidate", "SubgraphProtocol",
     "ReserveConfig", "UserPosition", "IndexerStats",
+    "RTokenArbitrageDetector", "RTokenState", "RTokenArbOpportunity",
 ]
